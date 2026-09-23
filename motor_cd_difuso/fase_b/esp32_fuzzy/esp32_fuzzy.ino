@@ -1,5 +1,6 @@
 /*
  * Control difuso (Mamdani / Sugeno) de velocidad de un motor CD con ESP32.
+ * Incluye un PI clásico (comando 'i') solo para comparar contra el difuso.
  *
  * Es el mismo controlador de fase_a/controlador.py:
  *   e = ref - rpm,  de = e - e_anterior
@@ -13,6 +14,7 @@
  * Comandos por Serial (115200, terminar con Enter):
  *   r1500  -> referencia en rpm (negativo = giro inverso; sin sensor solo en HIL)
  *   m      -> inferencia Mamdani      s -> inferencia Sugeno
+ *   i      -> PI clásico (para comparar; mismas ganancias que controlador.py)
  *   v6.0   -> lazo ABIERTO: voltaje fijo (para identificar el motor)
  *   p      -> paro (ref = 0, u = 0)
  *   h      -> modo HIL on/off (la PC simula el motor, ver hil_planta.py)
@@ -25,9 +27,9 @@
 const bool HAY_SENSOR = false;      // true solo si conectan un encoder/sensor
 const bool MOTOR_SIGUE_HIL = true;  // en HIL, aplicar u al motor real (demo visual)
 
-const int PIN_PWM = 25;    // ENA del L298N (o PWMA del TB6612)
-const int PIN_IN1 = 26;    // IN1
-const int PIN_IN2 = 27;    // IN2
+const int PIN_PWM = 27;    // ENA del L298N (verificado en nuestro hardware)
+const int PIN_IN1 = 25;    // IN1
+const int PIN_IN2 = 26;    // IN2
 const int PIN_ENC_A = 32;  // canal A del encoder (con interrupción)
 const int PIN_ENC_B = 33;  // canal B (dirección). Si su sensor es de 1 canal,
                            // ponga ENCODER_UN_CANAL = true.
@@ -42,7 +44,7 @@ const float V_FUENTE = 12.0;   // voltaje de la fuente del puente H
 // rpm en vacío a V_FUENTE. Para HIL = 2274 (las del motor simulado);
 // con sensor, el valor medido con "prueba_motor.py identificar".
 const float RPM_MAX = 2274.0;
-const float ZONA_MUERTA_V = 0.0;  // voltaje mínimo al que el motor empieza a girar
+const float ZONA_MUERTA_V = 6.5;  // medido: empieza a girar en ~7 V y gira bien en 8 V
 
 const unsigned long TS_US = 10000;  // periodo de control: 10 ms
 const float ALFA_FILTRO = 0.4;      // filtro de la velocidad (1 = sin filtro)
@@ -53,6 +55,11 @@ const float ALFA_FILTRO = 0.4;      // filtro de la velocidad (1 = sin filtro)
 const float KE = 1.0 / (0.20 * RPM_MAX);
 const float KDE = 1.0 / (0.066 * RPM_MAX);
 const float KDU = 2.5;  // [V por periodo]
+
+// PI clásico de comparación (iguales a ControladorPI en controlador.py)
+const float KP = 0.004;  // [V/rpm]
+const float KI = 0.12;   // [V/(rpm·s)]
+const float TS_S = TS_US / 1.0e6;  // periodo en segundos
 // =======================================================================
 
 const int PWM_FREQ = 20000;  // 20 kHz: fuera del rango audible
@@ -131,7 +138,8 @@ float rpm = 0.0;
 float ref = 0.0;
 float u = 0.0;
 float ePrev = 0.0;
-bool mamdani = true;
+float integral = 0.0;  // acumulador del PI
+char metodo = 'm';     // 'm' Mamdani, 's' Sugeno, 'i' PI clásico
 bool lazoAbierto = false;
 bool modoHIL = false;
 unsigned long tProximo = 0;
@@ -186,7 +194,14 @@ float pasoControl(float medida) {
   float e = ref - medida;
   float de = e - ePrev;
   ePrev = e;
-  float du = KDU * evaluarFIS(KE * e, KDE * de, mamdani);
+  if (metodo == 'i') {
+    // PI con anti-windup: solo integra si la salida no está saturada
+    float uLibre = KP * e + KI * (integral + e * TS_S);
+    u = constrain(uLibre, -V_FUENTE, V_FUENTE);
+    if (u == uLibre) integral += e * TS_S;
+    return u;
+  }
+  float du = KDU * evaluarFIS(KE * e, KDE * de, metodo == 'm');
   u = constrain(u + du, -V_FUENTE, V_FUENTE);  // anti-windup por saturación
   return u;
 }
@@ -194,6 +209,7 @@ float pasoControl(float medida) {
 void reiniciarControl() {
   u = 0.0;
   ePrev = ref;  // evita un "salto" de de en el primer paso
+  integral = 0.0;
 }
 
 void procesarComando(String cmd) {
@@ -210,8 +226,9 @@ void procesarComando(String cmd) {
       ref = valor;
       lazoAbierto = false;
       break;
-    case 'm': mamdani = true; break;
-    case 's': mamdani = false; break;
+    case 'm':
+    case 's':
+    case 'i': metodo = c; break;
     case 'v': lazoAbierto = true; u = valor; break;
     case 'p': ref = 0; lazoAbierto = false; reiniciarControl(); break;
     case 'h':
@@ -281,6 +298,7 @@ void loop() {
     Serial.print(ref, 1);     Serial.print(',');
     Serial.print(rpm, 1);     Serial.print(',');
     Serial.print(u, 3);       Serial.print(',');
-    Serial.println(lazoAbierto ? "abierto" : (mamdani ? "mamdani" : "sugeno"));
+    Serial.println(lazoAbierto ? "abierto"
+                   : (metodo == 'm' ? "mamdani" : (metodo == 's' ? "sugeno" : "pi")));
   }
 }

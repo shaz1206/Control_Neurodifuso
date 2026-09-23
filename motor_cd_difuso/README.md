@@ -107,15 +107,29 @@ PC (modelo del motor) --y rpm--> ESP32 (FIS Mamdani/Sugeno) --u volts--> PC
 1. Abran `esp32_fuzzy.ino` en Arduino IDE (placa "ESP32 Dev Module"). Dejen `HAY_SENSOR = false` y `RPM_MAX = 2274.0`, y súbanlo.
 2. Cierren el Monitor Serie (ocupa el puerto) y corran:
    ```bash
-   python fase_b/hil_planta.py --puerto COM5 --metodo mamdani
+   python fase_b/hil_planta.py --puerto COM7 --metodo mamdani
    ```
    ```bash
-   python fase_b/hil_planta.py --puerto COM5 --metodo sugeno
+   python fase_b/hil_planta.py --puerto COM7 --metodo sugeno
    ```
    La curva del HIL debe coincidir con la simulación. Eso demuestra que el FIS embebido está bien implementado. El CSV y la gráfica se guardan en `fase_b/resultados/`.
-3. Para probar el puente H a mano, desde el Monitor Serie: `v6` (6 V en lazo abierto), `v-6` (sentido inverso), `p` (paro).
+3. Para probar el puente H a mano, desde el Monitor Serie: `v6` (6 V en lazo abierto), `v-6` (sentido inverso), `p` (paro). Con `m`, `s` o `i` se elige Mamdani, Sugeno o PI.
 
 Por seguridad, si el script de la PC se cierra a medio HIL, el ESP32 apaga el motor a los 300 ms.
+
+### Interfaz gráfica (todo desde una ventana)
+
+```bash
+python fase_b/interfaz.py
+```
+
+- **Conexión:** elegir el puerto y presionar *Conectar*. Antes, cierren el Monitor Serie de Arduino.
+- **Modo:** *Simulación* (solo PC) o *HIL* (ESP32 + motor físico).
+- **Controlador:** Mamdani, Sugeno o PI clásico. El PI está en Python y en el firmware (comando `i`), solo para comparar contra el difuso; funciona en simulación y en HIL.
+- **Escenario:** las dos referencias, cuándo cambia, cuándo entra la carga y cuánta carga.
+- **Comparar todos los métodos:** corre uno tras otro y los encima en la misma gráfica, con su tabla de métricas.
+- **Motor manual:** un deslizador de −12 a 12 V para mover el motor en lazo abierto.
+- **Guardar resultados:** guarda la gráfica (PNG) y los datos (CSV) en `fase_b/resultados/`.
 
 ### Si luego consiguen un sensor (lazo cerrado real)
 
@@ -124,12 +138,12 @@ Un sensor óptico de ranura (FC-03 / MOCH22A) con un disco de cartón con ranura
 1. Pongan `HAY_SENSOR = true` y `ENCODER_UN_CANAL = true`, y en `PULSOS_POR_VUELTA` el número de ranuras.
 2. **Identificar el motor real:**
    ```bash
-   python fase_b/prueba_motor.py identificar --puerto COM5 --voltaje 12
+   python fase_b/prueba_motor.py identificar --puerto COM7 --voltaje 12
    ```
    El script imprime el valor de `RPM_MAX`. Pónganlo en el firmware. Si el motor no arranca con voltajes bajos, midan ese voltaje mínimo y pónganlo en `ZONA_MUERTA_V`.
 3. **Lazo cerrado real:**
    ```bash
-   python fase_b/prueba_motor.py lazo --puerto COM5 --metodo mamdani --ref1 200 --ref2 120
+   python fase_b/prueba_motor.py lazo --puerto COM7 --metodo mamdani --ref1 200 --ref2 120
    ```
    Repitan con `--metodo sugeno`. Durante la prueba pueden frenar el eje con los dedos para mostrar la perturbación.
 

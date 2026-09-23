@@ -3,10 +3,10 @@ Pruebas con el motor FÍSICO conectado al ESP32.
 
 1) Identificar el motor (lazo abierto): aplica un escalón de voltaje y mide
    la ganancia (rpm/V) y la constante de tiempo tau.
-       python prueba_motor.py identificar --puerto COM5 --voltaje 12
+       python prueba_motor.py identificar --puerto COM7 --voltaje 12
 
 2) Lazo cerrado con el controlador difuso: dos escalones de referencia.
-       python prueba_motor.py lazo --puerto COM5 --metodo mamdani --ref1 200 --ref2 120
+       python prueba_motor.py lazo --puerto COM7 --metodo mamdani --ref1 200 --ref2 120
    Durante el segundo escalón pueden frenar el eje con los dedos para
    mostrar el rechazo a perturbaciones.
 

@@ -14,8 +14,8 @@ carga simulada en t = 2.5 s. Por eso corre a tiempo real (10 ms por paso).
 
 El firmware debe tener RPM_MAX = 2274.0 (las rpm máximas del modelo simulado).
 
-Uso:  python hil_planta.py --puerto COM5 --metodo mamdani
-      python hil_planta.py --puerto COM5 --metodo sugeno --rapido   (sin esperar)
+Uso:  python hil_planta.py --puerto COM7 --metodo mamdani
+      python hil_planta.py --puerto COM7 --metodo sugeno --rapido   (sin esperar)
 """
 import argparse
 import csv
@@ -27,7 +27,7 @@ import numpy as np
 import serial
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fase_a"))
-from controlador import TS, ControladorDifuso  # noqa: E402
+from controlador import TS, ControladorDifuso, ControladorPI  # noqa: E402
 from motor_dc import MotorDC  # noqa: E402
 from simular import DT_PLANTA, T_FINAL, carga, metricas, referencia, simular  # noqa: E402
 
@@ -46,7 +46,7 @@ def esperar_linea(ser, prefijo, timeout=3.0):
 def correr_hil(ser, metodo, tiempo_real=True):
     ser.write(b"h\n")
     esperar_linea(ser, "# HIL ON")
-    ser.write(b"m\n" if metodo == "mamdani" else b"s\n")
+    ser.write({"mamdani": b"m\n", "sugeno": b"s\n", "pi": b"i\n"}[metodo])
 
     motor = MotorDC()
     sub = int(round(TS / DT_PLANTA))
@@ -77,7 +77,7 @@ def correr_hil(ser, metodo, tiempo_real=True):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--puerto", required=True, help="COM5, /dev/ttyUSB0, ...")
-    ap.add_argument("--metodo", choices=["mamdani", "sugeno"], default="mamdani")
+    ap.add_argument("--metodo", choices=["mamdani", "sugeno", "pi"], default="mamdani")
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--rapido", action="store_true",
                     help="no esperar a tiempo real (sin demo visual del motor)")
@@ -90,7 +90,8 @@ def main():
         t, r, y, u = correr_hil(ser, args.metodo, tiempo_real=not args.rapido)
         print(f"HIL terminado en {time.time() - inicio:.1f} s ({len(t)} pasos)")
 
-    ts, rs, ys, us = simular(ControladorDifuso(args.metodo), MotorDC())
+    ctrl = ControladorPI() if args.metodo == "pi" else ControladorDifuso(args.metodo)
+    ts, rs, ys, us = simular(ctrl, MotorDC())
     print(f"Diferencia máx. HIL vs simulación: {np.max(np.abs(y - ys)):.2f} rpm, "
           f"{np.max(np.abs(u - us)):.4f} V")
     for nombre, yy in (("HIL", y), ("Simulación", ys)):
