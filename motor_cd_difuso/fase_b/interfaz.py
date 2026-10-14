@@ -34,10 +34,20 @@ from controlador import RPM_MAX, TS, ControladorDifuso, ControladorPI  # noqa: E
 from motor_dc import MotorDC  # noqa: E402
 from simular import DT_PLANTA, metricas  # noqa: E402
 
+from puerto import abrir_esp32  # noqa: E402
+
 
 CARPETA = os.path.join(AQUI, "resultados")
 NOMBRES = {"mamdani": "Mamdani", "sugeno": "Sugeno", "pi": "PI clásico"}
 COMANDO_METODO = {"mamdani": b"m\n", "sugeno": b"s\n", "pi": b"i\n"}  # letra en el firmware
+PREFIJO_MODO = {"sim": "Sim", "hil": "HIL", "real": "Real"}
+RPM_MAX_REAL = 113.0  # GA25-370 medido: 113 rpm con 12 V a través del L298N
+ESCENARIO_SIM = {"ref1": "1500", "ref2": "800", "t_cambio": "1.5", "t_carga": "2.5",
+                 "par_carga": "0.03", "duracion": "4.0"}
+# Motor real: la "carga" es frenar el eje con los dedos en t_carga (par_carga
+# solo indica si se mide la caída; no se aplica nada automático).
+ESCENARIO_REAL = {"ref1": "90", "ref2": "60", "t_cambio": "3.0", "t_carga": "4.5",
+                  "par_carga": "1", "duracion": "6.0"}
 
 
 class Escenario:
@@ -147,6 +157,76 @@ def correr(esc, metodo, ser=None, tiempo_real=True, al_paso=None, detener=None):
     return t[:k], r[:k], y[:k], u[:k]
 
 
+def esperar_motor_parado(ser, timeout=5.0):
+    """Lee el encoder hasta ver el motor quieto 10 muestras seguidas (100 ms)."""
+    quietas = 0
+    limite = time.time() + timeout
+    while time.time() < limite:
+        partes = ser.readline().decode(errors="ignore").strip().split(",")
+        if len(partes) != 5:
+            continue
+        try:
+            rpm = float(partes[2])
+        except ValueError:
+            continue
+        quietas = quietas + 1 if abs(rpm) < 2.0 else 0
+        if quietas >= 10:
+            return
+    raise TimeoutError("El motor no se detuvo o el ESP32 no manda datos del encoder.")
+
+
+def correr_real(esc, metodo, ser, al_paso=None, detener=None):
+    """Lazo cerrado REAL: el ESP32 mide con el encoder y controla él solo.
+
+    La PC solo manda las referencias en su momento y lee lo que el ESP32
+    reporta cada 10 ms (t_ms, ref, rpm, u). La carga se aplica a mano.
+    """
+    ser.write(b"p\n")
+    ser.write(COMANDO_METODO[metodo])
+    ser.reset_input_buffer()
+    esperar_motor_parado(ser)
+    ser.write(f"r{esc.ref1:.1f}\n".encode())
+
+    t, r, y, u = [], [], [], []
+    t0 = None
+    cambiada = False
+    limite = time.time() + esc.duracion + 3.0
+    try:
+        while not (detener is not None and detener.is_set()):
+            if time.time() > limite:
+                raise TimeoutError("El ESP32 dejó de mandar datos. ¿Tiene el firmware con "
+                                   "encoder (HAY_SENSOR = true)?")
+            linea = ser.readline().decode(errors="ignore").strip()
+            if linea.startswith("# PROTECCION") or linea.startswith("# Sin sensor"):
+                raise RuntimeError(linea[2:])
+            partes = linea.split(",")
+            if len(partes) != 5:
+                continue
+            try:
+                t_ms, ri, yi, ui = (float(x) for x in partes[:4])
+            except ValueError:
+                continue
+            if t0 is None:  # el tiempo cero es cuando el ESP32 ya tomó la referencia
+                if abs(ri - esc.ref1) > 0.05:
+                    continue
+                t0 = t_ms
+            ti = (t_ms - t0) / 1000.0
+            if ti >= esc.duracion:
+                break
+            if ti >= esc.t_cambio and not cambiada:
+                ser.write(f"r{esc.ref2:.1f}\n".encode())
+                cambiada = True
+            t.append(ti)
+            r.append(ri)
+            y.append(yi)
+            u.append(ui)
+            if al_paso is not None:
+                al_paso(ti, ri, yi, ui)
+    finally:
+        ser.write(b"p\n")  # detener el motor pase lo que pase
+    return np.array(t), np.array(r), np.array(y), np.array(u)
+
+
 if sys.platform == "win32":  # texto nítido en pantallas con escalado (125 %, 150 %…)
     try:
         import ctypes
@@ -219,8 +299,11 @@ class App(tk.Tk):
         self.modo = tk.StringVar(value="sim")
         ttk.Radiobutton(caja, text="Simulación (solo PC)", variable=self.modo,
                         value="sim").pack(anchor="w")
-        ttk.Radiobutton(caja, text="HIL (ESP32 + motor físico)", variable=self.modo,
+        ttk.Radiobutton(caja, text="HIL (ESP32 + motor simulado)", variable=self.modo,
                         value="hil").pack(anchor="w")
+        ttk.Radiobutton(caja, text="Motor real (lazo cerrado, encoder)", variable=self.modo,
+                        value="real").pack(anchor="w")
+        self.modo.trace_add("write", lambda *_: self._escenario_por_modo())
         self.tiempo_real = tk.BooleanVar(value=True)
         ttk.Checkbutton(caja, text="Tiempo real (10 ms por paso)",
                         variable=self.tiempo_real).pack(anchor="w", pady=(4, 0))
@@ -347,17 +430,17 @@ class App(tk.Tk):
         if not self.puerto.get():
             messagebox.showwarning("Sin puerto", "Conecta el ESP32 por USB y presiona ↻.")
             return
-        try:
-            self.ser = serial.Serial(self.puerto.get(), 115200, timeout=1)
-        except serial.SerialException as e:
-            messagebox.showerror("No se pudo abrir el puerto",
-                                 f"{e}\n\n¿Está abierto el Monitor Serie de Arduino?")
-            return
         self.estado.set("Conectando… (el ESP32 se reinicia)")
         self.config(cursor="watch")
         self.update()
-        time.sleep(2.0)
-        self.ser.reset_input_buffer()
+        try:
+            self.ser = abrir_esp32(self.puerto.get())
+        except serial.SerialException as e:
+            self.config(cursor="")
+            self._actualizar_estado()
+            messagebox.showerror("No se pudo abrir el puerto",
+                                 f"{e}\n\n¿Está abierto el Monitor Serie de Arduino?")
+            return
         self.ser.write(b"p\n")
         self.config(cursor="")
         self._actualizar_estado()
@@ -393,6 +476,13 @@ class App(tk.Tk):
         self.ser.write(b"p\n")
 
     # ------------------------------------------------------------ corridas
+    def _escenario_por_modo(self):
+        """El motor real gira ~130 rpm y el simulado ~2274: cada uno con sus valores."""
+        real = self.modo.get() == "real"
+        valores = ESCENARIO_REAL if real else ESCENARIO_SIM
+        for clave, valor in valores.items():
+            self.campos[clave].set(valor)
+
     def _leer_escenario(self):
         try:
             v = {k: float(var.get().replace(",", ".")) for k, var in self.campos.items()}
@@ -402,9 +492,10 @@ class App(tk.Tk):
         if not 0.2 <= v["duracion"] <= 20:
             messagebox.showerror("Escenario", "La duración debe estar entre 0.2 y 20 s.")
             return None
-        if max(abs(v["ref1"]), abs(v["ref2"])) > RPM_MAX:
-            messagebox.showerror("Escenario",
-                                 f"El motor simulado llega a {RPM_MAX:.0f} rpm como máximo.")
+        tope, que = ((RPM_MAX_REAL, "El motor real (GA25-370)") if self.modo.get() == "real"
+                     else (RPM_MAX, "El motor simulado"))
+        if max(abs(v["ref1"]), abs(v["ref2"])) > tope:
+            messagebox.showerror("Escenario", f"{que} llega a {tope:.0f} rpm como máximo.")
             return None
         return Escenario(**v)
 
@@ -421,10 +512,9 @@ class App(tk.Tk):
         if esc is None:
             return
         modo = self.modo.get()
-        if modo == "hil":
-            if self.ser is None:
-                messagebox.showwarning("HIL", "Primero conecta el ESP32.")
-                return
+        if modo in ("hil", "real") and self.ser is None:
+            messagebox.showwarning("Sin conexión", "Primero conecta el ESP32.")
+            return
         self.detener.clear()
         self._preparar_ejes(esc)
         self._actualizar_estado(ocupado=True)
@@ -438,12 +528,17 @@ class App(tk.Tk):
         for metodo in metodos:
             if self.detener.is_set():
                 break
-            nombre = f"{'HIL' if modo == 'hil' else 'Sim'} {NOMBRES[metodo]}"
+            nombre = f"{PREFIJO_MODO[modo]} {NOMBRES[metodo]}"
             self.cola.put(("nueva", nombre))
+            al_paso = lambda *p: self.cola.put(("paso", *p))  # noqa: E731
             try:
-                datos = correr(esc, metodo, ser=self.ser if modo == "hil" else None,
-                               tiempo_real=tiempo_real, detener=self.detener,
-                               al_paso=lambda *p: self.cola.put(("paso", *p)))
+                if modo == "real":
+                    datos = correr_real(esc, metodo, self.ser, al_paso=al_paso,
+                                        detener=self.detener)
+                else:
+                    datos = correr(esc, metodo, ser=self.ser if modo == "hil" else None,
+                                   tiempo_real=tiempo_real, detener=self.detener,
+                                   al_paso=al_paso)
             except Exception as e:  # puerto desconectado, ESP32 sin responder, etc.
                 self.cola.put(("error", str(e)))
                 break

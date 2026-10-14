@@ -6,59 +6,79 @@
  *   e = ref - rpm,  de = e - e_anterior
  *   du = KDU * FIS(KE*e, KDE*de),   u = sat(u + du)   [V]
  *
- * Hardware: ESP32 + puente H (L298N / TB6612 / BTS7960) + motor CD.
- *   - SIN sensor (HAY_SENSOR = false): solo HIL. La PC simula la velocidad y el
- *     voltaje calculado también se aplica al motor real para verlo reaccionar.
- *   - CON encoder u optoacoplador (HAY_SENSOR = true): lazo cerrado real.
+ * Hardware: ESP32-S3-WROOM-1 (DevKitC-1) + puente H L298N + motor GA25-370
+ * (12 V, 130 rpm) con encoder Hall. En Arduino IDE: placa "ESP32S3 Dev Module".
+ *
+ * LED RGB integrado: muestra la etiqueta difusa DOMINANTE del error e:
+ *   NG rojo · NP amarillo · Z verde · PP cian · PG azul · apagado = motor parado.
+ *   - Lazo cerrado REAL: el encoder mide la velocidad y el FIS la corrige.
+ *   - HIL (comando 'h'): la PC simula el motor; el ESP32 solo calcula el control.
  *
  * Comandos por Serial (115200, terminar con Enter):
- *   r1500  -> referencia en rpm (negativo = giro inverso; sin sensor solo en HIL)
+ *   r100   -> referencia en rpm (negativo = giro inverso)
  *   m      -> inferencia Mamdani      s -> inferencia Sugeno
  *   i      -> PI clásico (para comparar; mismas ganancias que controlador.py)
  *   v6.0   -> lazo ABIERTO: voltaje fijo (para identificar el motor)
  *   p      -> paro (ref = 0, u = 0)
  *   h      -> modo HIL on/off (la PC simula el motor, ver hil_planta.py)
  *   yNNN   -> (solo HIL) velocidad simulada que manda la PC; se responde "uV"
+ *   c      -> imprime las cuentas del encoder (para calibrar CUENTAS_POR_VUELTA)
+ *   q      -> silencia / reactiva la salida CSV (para leer el Monitor Serie)
+ *   d      -> diagnóstico del encoder: cambios y nivel de A y B en 0.5 s
+ *   z4.5   -> cambia la zona muerta en vivo (para medirla; se pierde al reiniciar)
  *
  * Salida en modo normal (CSV, cada TS):  t_ms,ref,rpm,u,metodo
  */
 
 // ======================= CONFIGURACIÓN (ajustar) =======================
-const bool HAY_SENSOR = false;      // true solo si conectan un encoder/sensor
+const bool HAY_SENSOR = true;       // false = sin encoder (solo HIL)
 const bool MOTOR_SIGUE_HIL = true;  // en HIL, aplicar u al motor real (demo visual)
 
-const int PIN_PWM = 27;    // ENA del L298N (verificado en nuestro hardware)
-const int PIN_IN1 = 25;    // IN1
-const int PIN_IN2 = 26;    // IN2
-const int PIN_ENC_A = 32;  // canal A del encoder (con interrupción)
-const int PIN_ENC_B = 33;  // canal B (dirección). Si su sensor es de 1 canal,
-                           // ponga ENCODER_UN_CANAL = true.
-const bool ENCODER_UN_CANAL = false;
-const bool INVERTIR_ENCODER = false;  // si con u > 0 las rpm salen negativas
+// Pines de la ESP32-S3 (la S3 NO tiene GPIO 25-33: los usa la memoria flash).
+// Se evitan los de arranque (0, 3, 45, 46), USB (19, 20) y UART (43, 44).
+const int PIN_PWM = 4;     // ENA del L298N
+const int PIN_IN1 = 5;     // IN1
+const int PIN_IN2 = 6;     // IN2
+const int PIN_ENC_A = 7;   // canal A del encoder (C1). En nuestra placa el GPIO15 se queda en bajo
+const int PIN_ENC_B = 16;  // canal B del encoder (C2)
 
-// Pulsos flanco-de-subida del canal A por vuelta del EJE DE SALIDA
-// = PPR del encoder x relación de engranes. Ej.: JGA25-370 -> 11 x 34 = 374.
-const float PULSOS_POR_VUELTA = 374.0;
+// LED RGB integrado (WS2812). En la DevKitC-1 es el GPIO48; en algunas
+// placas v1.1 es el GPIO38: si no prende, cambie 48 por 38.
+#ifdef RGB_BUILTIN
+const int PIN_LED_RGB = RGB_BUILTIN;
+#else
+const int PIN_LED_RGB = 48;
+#endif
+const uint8_t BRILLO_LED = 40;  // 0-255 (a 255 deslumbra)
+const bool INVERTIR_ENCODER = true;   // medido: con voltaje positivo contaba en negativo
+
+// Cuentas por vuelta del EJE DE SALIDA leyendo A y B, subida y bajada (x4):
+// 11 pulsos/vuelta del motor x 4 flancos x 45 de reducción = 1980.
+// La reducción 1:45 es la típica del GA25-370 de 130 rpm: VERIFICAR con el
+// comando 'c' (ver README) y corregir aquí si sale otro número.
+const float CUENTAS_POR_VUELTA = 1980.0;
 
 const float V_FUENTE = 12.0;   // voltaje de la fuente del puente H
-// rpm en vacío a V_FUENTE. Para HIL = 2274 (las del motor simulado);
-// con sensor, el valor medido con "prueba_motor.py identificar".
-const float RPM_MAX = 2274.0;
-const float ZONA_MUERTA_V = 6.5;  // medido: empieza a girar en ~7 V y gira bien en 8 V
+// rpm en vacío a 12 V. Las ganancias se escalan con este número.
+const float RPM_MAX_REAL = 113.0;  // medido: 113 rpm con 12 V (el L298N se come ~2 V)
+const float RPM_MAX_HIL = 2274.0;  // motor simulado de la Fase A (no cambiar)
+const float ZONA_MUERTA_V = 6.0;   // medido: la recta rpm-voltaje cruza el cero en ~6.3 V
+float zonaMuerta = ZONA_MUERTA_V;  // se puede cambiar en vivo con el comando 'z'
 
 const unsigned long TS_US = 10000;  // periodo de control: 10 ms
 const float ALFA_FILTRO = 0.4;      // filtro de la velocidad (1 = sin filtro)
 
-// Ganancias de escala. Se expresan relativas a RPM_MAX para que sirvan
-// con cualquier motor: en simulación, 450 rpm y 150 rpm eran ~20 % y ~6.6 %
-// de las 2270 rpm máximas del modelo.
-const float KE = 1.0 / (0.20 * RPM_MAX);
-const float KDE = 1.0 / (0.066 * RPM_MAX);
-const float KDU = 2.5;  // [V por periodo]
+// Ganancias relativas a las rpm máximas, para que la misma sintonía sirva en
+// el motor simulado (2274 rpm) y en el real (~120 rpm). En la simulación,
+// 455 rpm de error y 150 rpm de cambio por periodo eran "grandes" = 20 % y 6.6 %.
+const float E_GRANDE = 0.20;    // fracción de las rpm máximas que ya es error "grande"
+const float DE_GRANDE = 0.066;  // fracción que ya es cambio "grande" por periodo
+const float KDU = 2.5;          // [V por periodo]
 
-// PI clásico de comparación (iguales a ControladorPI en controlador.py)
-const float KP = 0.004;  // [V/rpm]
-const float KI = 0.12;   // [V/(rpm·s)]
+// PI clásico de comparación: con 2274 rpm máximas da KP = 0.004 y KI = 0.12,
+// los mismos de ControladorPI en controlador.py.
+const float KP_REL = 0.004 * 2274.0;
+const float KI_REL = 0.12 * 2274.0;
 const float TS_S = TS_US / 1.0e6;  // periodo en segundos
 // =======================================================================
 
@@ -80,12 +100,57 @@ const uint8_t REGLAS[5][5] = {
   {2, 3, 4, 4, 4},  // e = PG
 };
 
+// Color de cada etiqueta (R, G, B): NG, NP, Z, PP, PG
+const uint8_t COLORES[5][3] = {
+  {255, 0, 0},    // NG rojo: muy por ENCIMA de la referencia
+  {255, 160, 0},  // NP amarillo
+  {0, 255, 0},    // Z  verde: en la referencia
+  {0, 200, 255},  // PP cian
+  {0, 0, 255},    // PG azul: muy por DEBAJO de la referencia
+};
+
 // Triángulo de ancho 0.5 a cada lado; los extremos son hombros.
 float pertenencia(float x, int j) {
   if (j == 0 && x <= CENTROS[0]) return 1.0;
   if (j == 4 && x >= CENTROS[4]) return 1.0;
   float mu = 1.0 - fabsf(x - CENTROS[j]) / 0.5;
   return mu > 0.0 ? mu : 0.0;
+}
+
+// Etiqueta con mayor grado de pertenencia (0=NG ... 4=PG).
+int etiquetaDominante(float x) {
+  int mejor = 0;
+  float muMejor = -1.0;
+  for (int j = 0; j < 5; j++) {
+    float mu = pertenencia(x, j);
+    if (mu > muMejor) {
+      muMejor = mu;
+      mejor = j;
+    }
+  }
+  return mejor;
+}
+
+int etiquetaLED = -2;  // la que se está mostrando (-1 = apagado)
+
+void escribirLED(uint8_t r, uint8_t g, uint8_t b) {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  rgbLedWrite(PIN_LED_RGB, r, g, b);
+#else
+  neopixelWrite(PIN_LED_RGB, r, g, b);
+#endif
+}
+
+// Cambia el color solo cuando cambia la etiqueta (j = -1 apaga el LED).
+void mostrarEtiqueta(int j) {
+  if (j == etiquetaLED) return;
+  etiquetaLED = j;
+  if (j < 0) {
+    escribirLED(0, 0, 0);
+    return;
+  }
+  escribirLED(COLORES[j][0] * BRILLO_LED / 255, COLORES[j][1] * BRILLO_LED / 255,
+              COLORES[j][2] * BRILLO_LED / 255);
 }
 
 float evaluarFIS(float e, float de, bool mamdani) {
@@ -133,6 +198,9 @@ float evaluarFIS(float e, float de, bool mamdani) {
 
 // ------------------------- Estado ---------------------------------------
 volatile long cuentas = 0;
+volatile uint8_t estadoEnc = 0;  // último estado (A,B) leído por la interrupción
+bool imprimirCSV = true;
+int pasosSospechosos = 0;        // para la protección
 long cuentasPrevias = 0;
 float rpm = 0.0;
 float ref = 0.0;
@@ -146,13 +214,18 @@ unsigned long tProximo = 0;
 unsigned long tUltimoY = 0;  // último dato de la PC en HIL (para el watchdog)
 String linea = "";
 
+// Decodificador en cuadratura x4. Índice = (estado anterior << 2) | estado nuevo;
+// +1/-1 según el sentido, 0 si no cambió o si se saltó un estado (ruido).
+DRAM_ATTR static const int8_t TABLA_CUADRATURA[16] = {
+  0, -1, 1, 0,  1, 0, 0, -1,  -1, 0, 0, 1,  0, 1, -1, 0};
+
 void IRAM_ATTR isrEncoder() {
-  if (ENCODER_UN_CANAL) {
-    cuentas++;  // sin canal B no se sabe el sentido
-  } else {
-    cuentas += digitalRead(PIN_ENC_B) ? 1 : -1;
-  }
+  uint8_t estado = (digitalRead(PIN_ENC_A) << 1) | digitalRead(PIN_ENC_B);
+  cuentas += TABLA_CUADRATURA[(estadoEnc << 2) | estado];
+  estadoEnc = estado;
 }
+
+float rpmMax() { return modoHIL ? RPM_MAX_HIL : RPM_MAX_REAL; }
 
 void escribirPWM(int duty) {
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
@@ -172,7 +245,7 @@ void aplicarVoltaje(float v) {
     return;
   }
   // Compensación de zona muerta: el motor no gira por debajo de ZONA_MUERTA_V
-  float magnitud = ZONA_MUERTA_V + fabsf(v) * (V_FUENTE - ZONA_MUERTA_V) / V_FUENTE;
+  float magnitud = zonaMuerta + fabsf(v) * (V_FUENTE - zonaMuerta) / V_FUENTE;
   digitalWrite(PIN_IN1, v > 0 ? HIGH : LOW);
   digitalWrite(PIN_IN2, v > 0 ? LOW : HIGH);
   escribirPWM((int)(magnitud / V_FUENTE * PWM_MAX));
@@ -184,9 +257,8 @@ float leerRPM() {
   interrupts();
   long delta = c - cuentasPrevias;
   cuentasPrevias = c;
-  float medida = (delta / PULSOS_POR_VUELTA) * (60.0e6 / TS_US);
+  float medida = (delta / CUENTAS_POR_VUELTA) * (60.0e6 / TS_US);
   if (INVERTIR_ENCODER) medida = -medida;
-  if (ENCODER_UN_CANAL && u < 0) medida = -medida;  // se asume el sentido de u
   return ALFA_FILTRO * medida + (1.0 - ALFA_FILTRO) * rpm;  // filtro pasa-bajas
 }
 
@@ -194,15 +266,31 @@ float pasoControl(float medida) {
   float e = ref - medida;
   float de = e - ePrev;
   ePrev = e;
+  // LED: etiqueta dominante del error normalizado (apagado si está parado)
+  if (ref == 0.0 && fabsf(medida) < 1.0) {
+    mostrarEtiqueta(-1);
+  } else {
+    mostrarEtiqueta(etiquetaDominante(e / (E_GRANDE * rpmMax())));
+  }
+  // Límites del voltaje. En el motor real no se deja que u cambie de signo
+  // respecto a la referencia: un voltaje "al revés" + la compensación de zona
+  // muerta es un frenazo de ~6 V que hunde la velocidad. Para bajar, el motor
+  // queda libre y lo frena su propia fricción. (En HIL se deja igual que en Python.)
+  float uMin = -V_FUENTE, uMax = V_FUENTE;
+  if (!modoHIL && ref > 0.0) uMin = 0.0;
+  if (!modoHIL && ref < 0.0) uMax = 0.0;
+
   if (metodo == 'i') {
     // PI con anti-windup: solo integra si la salida no está saturada
-    float uLibre = KP * e + KI * (integral + e * TS_S);
-    u = constrain(uLibre, -V_FUENTE, V_FUENTE);
+    float uLibre = (KP_REL / rpmMax()) * e + (KI_REL / rpmMax()) * (integral + e * TS_S);
+    u = constrain(uLibre, uMin, uMax);
     if (u == uLibre) integral += e * TS_S;
     return u;
   }
-  float du = KDU * evaluarFIS(KE * e, KDE * de, metodo == 'm');
-  u = constrain(u + du, -V_FUENTE, V_FUENTE);  // anti-windup por saturación
+  float ke = 1.0 / (E_GRANDE * rpmMax());
+  float kde = 1.0 / (DE_GRANDE * rpmMax());
+  float du = KDU * evaluarFIS(ke * e, kde * de, metodo == 'm');
+  u = constrain(u + du, uMin, uMax);  // anti-windup por saturación
   return u;
 }
 
@@ -210,6 +298,22 @@ void reiniciarControl() {
   u = 0.0;
   ePrev = ref;  // evita un "salto" de de en el primer paso
   integral = 0.0;
+  pasosSospechosos = 0;
+}
+
+// Protección en lazo cerrado real: si el voltaje está al máximo y el motor no
+// gira, o el encoder cuenta al revés, el controlador se iría a 12 V sin parar.
+void revisarProteccion() {
+  bool sinGiro = fabsf(u) > 0.9 * V_FUENTE && fabsf(rpm) < 2.0;
+  bool alReves = (u > 3.0 && rpm < -5.0) || (u < -3.0 && rpm > 5.0);
+  pasosSospechosos = (sinGiro || alReves) ? pasosSospechosos + 1 : 0;
+  if (pasosSospechosos > 100) {  // 1 s seguido
+    Serial.println(alReves
+        ? "# PROTECCION: el encoder cuenta al reves. Ponga INVERTIR_ENCODER = true"
+        : "# PROTECCION: voltaje al maximo y el motor no gira. Revise motor y encoder");
+    ref = 0;
+    reiniciarControl();
+  }
 }
 
 void procesarComando(String cmd) {
@@ -229,8 +333,48 @@ void procesarComando(String cmd) {
     case 'm':
     case 's':
     case 'i': metodo = c; break;
-    case 'v': lazoAbierto = true; u = valor; break;
+    case 'v': lazoAbierto = true; u = valor; mostrarEtiqueta(-1); break;
     case 'p': ref = 0; lazoAbierto = false; reiniciarControl(); break;
+    case 'c': {
+      noInterrupts();
+      long c0 = cuentas;
+      interrupts();
+      if (INVERTIR_ENCODER) c0 = -c0;
+      Serial.print("# cuentas ");
+      Serial.print(c0);
+      Serial.print("  (= ");
+      Serial.print(c0 / CUENTAS_POR_VUELTA, 2);
+      Serial.println(" vueltas segun CUENTAS_POR_VUELTA)");
+      break;
+    }
+    case 'd': {
+      // Diagnóstico del encoder: lee A y B directo durante 0.5 s (sin interrupciones)
+      long cambiosA = 0, cambiosB = 0, altosA = 0, altosB = 0, n = 0;
+      int a0 = digitalRead(PIN_ENC_A), b0 = digitalRead(PIN_ENC_B);
+      unsigned long fin = millis() + 500;
+      while (millis() < fin) {
+        int a = digitalRead(PIN_ENC_A), b = digitalRead(PIN_ENC_B);
+        cambiosA += (a != a0);
+        cambiosB += (b != b0);
+        altosA += a;
+        altosB += b;
+        a0 = a;
+        b0 = b;
+        n++;
+      }
+      Serial.printf("# diag A: cambios=%ld alto=%ld%% | B: cambios=%ld alto=%ld%%\n",
+                    cambiosA, 100 * altosA / n, cambiosB, 100 * altosB / n);
+      break;
+    }
+    case 'z':  // zona muerta en vivo (para medirla); se pierde al reiniciar
+      zonaMuerta = constrain(valor, 0.0f, V_FUENTE - 1.0f);
+      Serial.print("# zona muerta = ");
+      Serial.println(zonaMuerta, 2);
+      break;
+    case 'q':
+      imprimirCSV = !imprimirCSV;
+      Serial.println(imprimirCSV ? "# CSV ON" : "# CSV OFF");
+      break;
     case 'h':
       modoHIL = !modoHIL;
       ref = 0;
@@ -262,8 +406,13 @@ void setup() {
   ledcSetup(0, PWM_FREQ, PWM_BITS);
   ledcAttachPin(PIN_PWM, 0);
 #endif
-  if (HAY_SENSOR) attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), isrEncoder, RISING);
+  if (HAY_SENSOR) {
+    estadoEnc = (digitalRead(PIN_ENC_A) << 1) | digitalRead(PIN_ENC_B);
+    attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), isrEncoder, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(PIN_ENC_B), isrEncoder, CHANGE);
+  }
   aplicarVoltaje(0);
+  mostrarEtiqueta(-1);
   Serial.println("# t_ms,ref,rpm,u,metodo");
   tProximo = micros();
 }
@@ -291,9 +440,23 @@ void loop() {
   if ((long)(micros() - tProximo) >= 0) {
     tProximo += TS_US;
     rpm = HAY_SENSOR ? leerRPM() : 0.0;
-    if (!lazoAbierto && HAY_SENSOR) pasoControl(rpm);
+    if (!lazoAbierto && HAY_SENSOR) {
+      if (ref == 0.0) {
+        // Parado: motor libre. No se controla alrededor de 0 rpm, porque con la
+        // zona muerta eso daría patadas de +-6 V. Se reinicia para el próximo arranque.
+        u = 0.0;
+        ePrev = 0.0;
+        integral = 0.0;
+        pasosSospechosos = 0;
+        mostrarEtiqueta(-1);
+      } else {
+        pasoControl(rpm);
+        revisarProteccion();
+      }
+    }
     aplicarVoltaje(u);
 
+    if (!imprimirCSV) return;
     Serial.print(millis());   Serial.print(',');
     Serial.print(ref, 1);     Serial.print(',');
     Serial.print(rpm, 1);     Serial.print(',');

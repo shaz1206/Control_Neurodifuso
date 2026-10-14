@@ -24,7 +24,8 @@ import sys
 import time
 
 import numpy as np
-import serial
+
+from puerto import abrir_esp32
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fase_a"))
 from controlador import TS, ControladorDifuso, ControladorPI  # noqa: E402
@@ -83,9 +84,7 @@ def main():
                     help="no esperar a tiempo real (sin demo visual del motor)")
     args = ap.parse_args()
 
-    with serial.Serial(args.puerto, args.baud, timeout=1) as ser:
-        time.sleep(2.0)  # el ESP32 se reinicia al abrir el puerto
-        ser.reset_input_buffer()
+    with abrir_esp32(args.puerto, args.baud) as ser:
         inicio = time.time()
         t, r, y, u = correr_hil(ser, args.metodo, tiempo_real=not args.rapido)
         print(f"HIL terminado en {time.time() - inicio:.1f} s ({len(t)} pasos)")

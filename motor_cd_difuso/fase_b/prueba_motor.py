@@ -19,7 +19,8 @@ import sys
 import time
 
 import numpy as np
-import serial
+
+from puerto import abrir_esp32
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fase_a"))
 from simular import metricas  # noqa: E402
@@ -46,9 +47,7 @@ def leer_durante(ser, segundos, datos, eventos=()):
 
 
 def abrir(puerto, baud):
-    ser = serial.Serial(puerto, baud, timeout=0.5)
-    time.sleep(2.0)
-    ser.reset_input_buffer()
+    ser = abrir_esp32(puerto, baud, timeout=0.5)
     ser.write(b"p\n")
     return ser
 

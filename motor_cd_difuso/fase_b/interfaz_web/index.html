@@ -1,0 +1,1151 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Control difuso de motor CD</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --borde: #e2e5ea; --texto: #1c2024; --suave: #60646c;
+    --acento: #3e63dd; --acento-suave: #e6edfe; --grid: #eef0f3; --eje: #8b8d98;
+    --peligro: #e5484d; --ok: #30a46c;
+    --ng: #e5484d; --np: #f5a524; --z: #30a46c; --pp: #12a5c9; --pg: #3e63dd;
+    --s0: #3e63dd; --s1: #f76b15; --s2: #30a46c; --s3: #8e4ec6; --s4: #e5484d; --s5: #12a5c9;
+    --ref: #1c2024;
+    --v0: #8b8d98; --v1: #12a5c9; --v2: #30a46c; --v3: #f5a524; --v4: #e5484d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111113; --panel: #18191b; --borde: #2e3135; --texto: #edeef0; --suave: #b0b4ba;
+      --acento: #5472e4; --acento-suave: #1d2448; --grid: #232529; --eje: #6c6e79; --ref: #edeef0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--texto);
+         font: 14px/1.4 system-ui, "Segoe UI", Roboto, sans-serif; }
+  .app { display: grid; grid-template-columns: 290px 1fr; gap: 14px; padding: 14px; min-height: 100vh; }
+  aside { display: flex; flex-direction: column; gap: 12px; }
+  main { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .card { background: var(--panel); border: 1px solid var(--borde); border-radius: 12px; padding: 14px; }
+  .card h2 { margin: 0 0 10px; font-size: 13px; font-weight: 600; text-transform: uppercase;
+             letter-spacing: .04em; color: var(--suave); }
+  h1 { font-size: 17px; margin: 2px 2px 0; }
+  .sub { color: var(--suave); font-size: 12px; margin: 0 2px; }
+  button { font: inherit; border: 1px solid var(--borde); background: var(--panel); color: var(--texto);
+           border-radius: 8px; padding: 8px 10px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--acento); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primario { background: var(--acento); color: #fff; border-color: var(--acento); font-weight: 600; }
+  button.peligro { color: var(--peligro); }
+  .fila { display: flex; gap: 8px; align-items: center; }
+  .fila > * { flex: 1; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .segmentado { display: grid; gap: 4px; }
+  .segmentado label { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 8px;
+                      border: 1px solid var(--borde); cursor: pointer; }
+  .segmentado input { accent-color: var(--acento); }
+  .segmentado label:has(input:checked) { border-color: var(--acento); background: var(--acento-suave); }
+  .campos { display: grid; grid-template-columns: 1fr 78px; gap: 6px 8px; align-items: center; }
+  .campos input { width: 100%; font: inherit; padding: 5px 7px; border-radius: 6px;
+                  border: 1px solid var(--borde); background: var(--bg); color: var(--texto); }
+  .estado { font-size: 12px; color: var(--suave); }
+  .punto { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--eje); margin-right: 6px; }
+  .punto.on { background: var(--ok); }
+  .lectura { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--suave); }
+  input[type=range] { width: 100%; accent-color: var(--acento); }
+  .aviso { background: #fff4e5; color: #8a4b00; border: 1px solid #f5d29a; border-radius: 10px; padding: 10px 12px; }
+  @media (prefers-color-scheme: dark) { .aviso { background: #2b1d0b; color: #f5c27a; border-color: #5c3d0d; } }
+  .error { background: #feebec; color: #a5242a; border-color: #f4b8bb; }
+  @media (prefers-color-scheme: dark) { .error { background: #3b1218; color: #ff9592; border-color: #6b1f26; } }
+  canvas { width: 100%; display: block; }
+  #cVel { height: 260px; } #cVolt { height: 180px; }
+  .leyenda { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; margin: 4px 0 8px 52px; }
+  .leyenda span { display: inline-flex; align-items: center; gap: 6px; }
+  .leyenda i { width: 16px; height: 3px; border-radius: 2px; display: inline-block; }
+  .inferencia { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) 250px; gap: 14px; }
+  .inferencia canvas { height: 150px; }
+  .tituloMini { font-size: 12px; color: var(--suave); margin-bottom: 4px; display: flex; justify-content: space-between; }
+  .valor { font-variant-numeric: tabular-nums; color: var(--texto); font-weight: 600; }
+  .chips { display: flex; gap: 4px; margin-top: 6px; }
+  .chip { flex: 1; text-align: center; font-size: 11px; padding: 3px 0; border-radius: 6px; border: 1px solid var(--borde);
+          font-variant-numeric: tabular-nums; }
+  table.reglas { border-collapse: separate; border-spacing: 3px; width: 100%; font-size: 11px; }
+  table.reglas td, table.reglas th { text-align: center; padding: 4px 0; border-radius: 5px; }
+  table.reglas th { color: var(--suave); font-weight: 500; }
+  table.reglas td { border: 1px solid var(--borde); transition: background-color .12s; }
+  .chip { transition: background-color .12s; }
+  .reproductor { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .reproductor input[type=range] { flex: 1; min-width: 160px; }
+  .reproductor select { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--borde);
+                        background: var(--panel); color: var(--texto); }
+  .reproductor .valor { min-width: 78px; text-align: right; }
+  .deslizadorVel { margin: 2px 0 14px; }
+  .deslizadorVel input[type=range] { width: 100%; height: 26px; margin: 0; cursor: pointer; }
+  .marcasVel { position: relative; height: 30px; margin: 0 10px; font-size: 11px; color: var(--suave); }
+  .marcasVel span { position: absolute; transform: translateX(-50%); text-align: center; white-space: nowrap; line-height: 1.25; }
+  .marcasVel b { display: block; font-weight: 600; }
+  .filaObjetivo { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 6px; font-size: 14px; }
+  .filaObjetivo button { flex: 0 0 auto; }
+  .velGrid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: center; }
+  #cVelLing { height: 150px; }
+  .frase { font-size: 16px; margin: 0 0 10px; line-height: 1.35; }
+  .frase b { font-weight: 700; }
+  @media (max-width: 1000px) { .velGrid { grid-template-columns: 1fr; } }
+  .dominante { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+  .led { width: 14px; height: 14px; border-radius: 50%; background: var(--eje); box-shadow: 0 0 0 3px var(--grid); }
+  .cabecera { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 10px; }
+  .cabecera h2 { margin: 0; }
+  table.metricas { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+  table.metricas th, table.metricas td { padding: 7px 8px; border-bottom: 1px solid var(--borde); text-align: right; }
+  table.metricas th:first-child, table.metricas td:first-child { text-align: left; }
+  table.metricas th { color: var(--suave); font-weight: 500; font-size: 12px; }
+  .vacio { color: var(--suave); text-align: center !important; padding: 14px !important; }
+  @media (max-width: 1250px) { .inferencia { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 820px) { .app { grid-template-columns: 1fr; } .inferencia { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div>
+      <h1>Control difuso · Motor CD</h1>
+      <p class="sub">Mamdani · Sugeno · PI — Simulación, HIL y motor real</p>
+    </div>
+
+    <div id="avisoSerial" class="aviso" hidden>
+      Este navegador no puede usar el puerto USB. Abre la página en <b>Chrome</b> o <b>Edge</b>.
+      La simulación sí funciona.
+    </div>
+
+    <section class="card col">
+      <h2>Conexión</h2>
+      <button id="bConectar">Conectar ESP32</button>
+      <div class="estado"><span id="punto" class="punto"></span><span id="txtEstado">Desconectado</span></div>
+      <div class="lectura" id="lectura"></div>
+    </section>
+
+    <section class="card">
+      <h2>Modo</h2>
+      <div class="segmentado" id="modos">
+        <label><input type="radio" name="modo" value="sim" checked> Simulación (solo PC)</label>
+        <label><input type="radio" name="modo" value="hil"> HIL (ESP32 + motor simulado)</label>
+        <label><input type="radio" name="modo" value="real"> Motor real (encoder)</label>
+      </div>
+      <label class="fila" style="margin-top:8px; font-size:13px">
+        <span style="flex:0"><input type="checkbox" id="tiempoReal" checked></span>
+        <span>Tiempo real (10 ms por paso)</span>
+      </label>
+    </section>
+
+    <section class="card">
+      <h2>Controlador</h2>
+      <div class="segmentado">
+        <label><input type="radio" name="metodo" value="mamdani" checked> Mamdani</label>
+        <label><input type="radio" name="metodo" value="sugeno"> Sugeno</label>
+        <label><input type="radio" name="metodo" value="pi"> PI clásico (para comparar)</label>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Escenario</h2>
+      <div class="campos">
+        <label for="ref1">Referencia 1 [rpm]</label><input id="ref1">
+        <label for="ref2">Referencia 2 [rpm]</label><input id="ref2">
+        <label for="t_cambio">Cambio de ref. en [s]</label><input id="t_cambio">
+        <label for="t_carga">Carga en [s]</label><input id="t_carga">
+        <label for="par_carga" id="lblCarga">Par de carga [N·m]</label><input id="par_carga">
+        <label for="duracion">Duración [s]</label><input id="duracion">
+      </div>
+      <p class="estado" id="notaCarga" hidden style="margin:8px 0 0">En el motor real, frenen el eje con los dedos en ese segundo. Con 0 no se mide la caída.</p>
+    </section>
+
+    <section class="card col">
+      <h2>Acciones</h2>
+      <button id="bEjecutar" class="primario">▶ Ejecutar</button>
+      <button id="bComparar">Comparar los tres métodos</button>
+      <button id="bDetener" class="peligro" disabled>■ Detener</button>
+      <div class="fila">
+        <button id="bLimpiar">Limpiar</button>
+        <button id="bGuardar">Guardar</button>
+      </div>
+    </section>
+
+    <section class="card col">
+      <h2>Motor manual (lazo abierto)</h2>
+      <div class="fila"><input type="range" id="voltaje" min="-12" max="12" step="0.1" value="0">
+        <span class="valor" id="txtVoltaje" style="flex:0 0 58px; text-align:right">0.0 V</span></div>
+      <div class="fila">
+        <button id="bAplicar" disabled>Aplicar</button>
+        <button id="bParar" disabled>Parar motor</button>
+      </div>
+    </section>
+  </aside>
+
+  <main>
+    <div id="mensaje" class="aviso error" hidden></div>
+
+    <section class="card">
+      <div class="cabecera"><h2>Velocidad y voltaje</h2><span class="estado" id="txtCorrida"></span></div>
+      <canvas id="cVel"></canvas>
+      <div class="leyenda" id="leyenda"></div>
+      <canvas id="cVolt"></canvas>
+    </section>
+
+    <section class="card">
+      <div class="cabecera">
+        <h2>Velocidad en palabras</h2>
+        <span class="estado" id="txtLibre">Elige una velocidad para mover el motor</span>
+      </div>
+      <div class="deslizadorVel">
+        <input type="range" id="rVel" min="0" max="100" step="1" value="0" aria-label="Velocidad objetivo">
+        <div class="marcasVel" id="marcasVel"></div>
+        <div class="filaObjetivo">
+          <span id="txtObjetivo">Mueve el deslizador para arrancar el motor</span>
+          <button id="bLibreParar" disabled>■ Detener motor</button>
+        </div>
+      </div>
+      <div class="velGrid">
+        <canvas id="cVelLing"></canvas>
+        <div>
+          <p class="frase" id="fraseVel">—</p>
+          <div class="chips" id="chipsVel"></div>
+          <label class="fila" id="filaCargaLibre" style="margin-top:12px; font-size:13px">
+            <span style="flex:0"><input type="checkbox" id="cargaLibre"></span>
+            <span>Aplicar carga simulada (frenar el motor)</span>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="cabecera">
+        <h2>Inferencia difusa en vivo</h2>
+        <span class="dominante"><span class="led" id="led"></span><span id="txtDominante">Etiqueta dominante del error: —</span></span>
+      </div>
+      <div class="reproductor">
+        <button id="bPlay" disabled>▶ Reproducir</button>
+        <select id="selVel" title="Velocidad de la reproducción">
+          <option value="1">1×</option><option value="0.5">0.5×</option>
+          <option value="0.25" selected>0.25×</option><option value="0.1">0.1×</option>
+        </select>
+        <select id="selCorrida" title="Corrida a reproducir" disabled></select>
+        <input type="range" id="rTiempo" min="0" max="1" step="0.01" value="0" disabled>
+        <span class="valor" id="txtTiempo">t = —</span>
+      </div>
+      <div class="inferencia">
+        <div>
+          <div class="tituloMini"><span>Error e (normalizado)</span><span class="valor" id="vE">—</span></div>
+          <canvas id="cE"></canvas>
+          <div class="chips" id="chipsE"></div>
+        </div>
+        <div>
+          <div class="tituloMini"><span>Cambio del error de</span><span class="valor" id="vDE">—</span></div>
+          <canvas id="cDE"></canvas>
+          <div class="chips" id="chipsDE"></div>
+        </div>
+        <div>
+          <div class="tituloMini"><span id="tituloSalida">Salida du — Mamdani</span><span class="valor" id="vDU">—</span></div>
+          <canvas id="cDU"></canvas>
+          <div class="estado" id="notaSalida" style="margin-top:6px"></div>
+        </div>
+        <div>
+          <div class="tituloMini"><span>Reglas (fuerza de disparo)</span></div>
+          <table class="reglas" id="tReglas"></table>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Métricas (primer escalón)</h2>
+      <table class="metricas">
+        <thead><tr><th>Corrida</th><th>Sobrepaso %</th><th>t subida [s]</th><th>t establ. [s]</th>
+          <th>Error final [rpm]</th><th>IAE</th><th>Caída por carga [rpm]</th></tr></thead>
+        <tbody id="tMetricas"><tr><td class="vacio" colspan="7">Todavía no hay corridas</td></tr></tbody>
+      </table>
+    </section>
+  </main>
+</div>
+
+<script src="control.js"></script>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const NOMBRES = { mamdani: "Mamdani", sugeno: "Sugeno", pi: "PI clásico" };
+const PREFIJO = { sim: "Sim", hil: "HIL", real: "Real" };
+const LETRA = { mamdani: "m", sugeno: "s", pi: "i" };
+const COLOR_ETQ = ["--ng", "--np", "--z", "--pp", "--pg"];
+const ESCENARIO = {
+  sim: { ref1: 1500, ref2: 800, t_cambio: 1.5, t_carga: 2.5, par_carga: 0.03, duracion: 4 },
+  real: { ref1: 90, ref2: 60, t_cambio: 3, t_carga: 4.5, par_carga: 1, duracion: 6 },
+};
+const radio = (n) => document.querySelector(`input[name=${n}]:checked`).value;
+
+// ===================================================================== Puerto serie
+// Web Serial (Chrome/Edge). Abre sin dejar a la ESP32-S3 en modo de descarga:
+// DTR/RTS apagados y un pulso en RTS (= botón RST), igual que puerto.py.
+class Puerto {
+  constructor() { this.cola = []; this.esperas = []; this.ultimo = null; }
+  async abrir() {
+    this.port = await navigator.serial.requestPort();
+    await this.port.open({ baudRate: 115200 });
+    await this.port.setSignals({ dataTerminalReady: false, requestToSend: false });
+    await sleep(50);
+    await this.port.setSignals({ requestToSend: true });
+    await sleep(100);
+    await this.port.setSignals({ requestToSend: false });
+    this.writer = this.port.writable.getWriter();
+    this.leyendo = this.leer();
+    await sleep(1500);
+    this.limpiar();
+  }
+  async leer() {
+    const dec = new TextDecoderStream();
+    this.tuberia = this.port.readable.pipeTo(dec.writable).catch(() => {});
+    this.reader = dec.readable.getReader();
+    let buf = "";
+    try {
+      for (;;) {
+        const { value, done } = await this.reader.read();
+        if (done) break;
+        buf += value;
+        let n;
+        while ((n = buf.indexOf("\n")) >= 0) {
+          const linea = buf.slice(0, n).trim();
+          buf = buf.slice(n + 1);
+          if (linea) this.recibir(linea);
+        }
+      }
+    } catch (e) { /* puerto cerrado */ }
+  }
+  recibir(linea) {
+    const p = linea.split(",");
+    if (p.length === 5 && !isNaN(+p[0])) this.ultimo = { ref: +p[1], rpm: +p[2], u: +p[3], metodo: p[4] };
+    if (this.esperas.length) this.esperas.shift()(linea);
+    else { this.cola.push(linea); if (this.cola.length > 3000) this.cola.splice(0, 1000); }
+  }
+  limpiar() { this.cola = []; }
+  async escribir(txt) { await this.writer.write(new TextEncoder().encode(txt + "\n")); }
+  siguiente(ms) {
+    if (this.cola.length) return Promise.resolve(this.cola.shift());
+    return new Promise((res) => {
+      const f = (l) => { clearTimeout(to); res(l); };
+      const to = setTimeout(() => { this.esperas = this.esperas.filter((x) => x !== f); res(null); }, ms);
+      this.esperas.push(f);
+    });
+  }
+  async esperarPrefijo(prefijo, ms = 2000) {
+    const vistas = [];
+    const limite = performance.now() + ms;
+    while (performance.now() < limite) {
+      const l = await this.siguiente(limite - performance.now());
+      if (l === null) break;
+      if (l.startsWith(prefijo)) return l;
+      vistas.push(l);
+    }
+    throw new Error(diagnosticar(vistas, prefijo));
+  }
+  async cerrar() {
+    try { await this.escribir("p"); } catch (e) {}
+    try { await this.reader.cancel(); } catch (e) {}
+    await this.tuberia;
+    try { this.writer.releaseLock(); } catch (e) {}
+    try { await this.port.close(); } catch (e) {}
+  }
+}
+
+function diagnosticar(vistas, prefijo) {
+  if (vistas.some((l) => l.includes("Brownout")))
+    return "El ESP32 se reinició por caída de voltaje (brownout). Revisa la fuente y el GND común.";
+  if (vistas.some((l) => l.startsWith("# t_ms") || l.includes("rst:") || l.startsWith("ets ")))
+    return "El ESP32 se reinició a mitad de la prueba (ruido o caída de voltaje al arrancar el motor).";
+  if (vistas.some((l) => l.split(",").length === 5 && /^\d/.test(l)))
+    return "El ESP32 salió del modo HIL (está mandando datos normales). Vuelve a presionar Ejecutar.";
+  return `El ESP32 no respondió con '${prefijo}'. Último que llegó: ${vistas.slice(-3).join(" | ") || "(nada)"}`;
+}
+
+// ===================================================================== Corridas
+// Cada modo llama a alPaso(t, ref, rpm, u) en cada periodo de 10 ms.
+function Escenario(v) {
+  return { ...v, referencia: (t) => (t < v.t_cambio ? v.ref1 : v.ref2), carga: (t) => (t >= v.t_carga ? v.par_carga : 0) };
+}
+
+async function ritmo(inicio, t) {
+  const falta = inicio + t * 1000 - performance.now();
+  if (falta > 1) await sleep(falta);
+}
+
+async function correrSim(esc, metodo, tiempoReal, alPaso, detener) {
+  const motor = new MotorDC();
+  const ctrl = nuevoControlador(metodo);
+  const n = Math.round(esc.duracion / TS);
+  const inicio = performance.now();
+  for (let k = 0; k < n && !detener.v; k++) {
+    const t = k * TS;
+    if (tiempoReal) await ritmo(inicio, t);
+    else if (k % 20 === 0) await sleep(0);  // dejar respirar a la página
+    const r = esc.referencia(t), y = motor.rpm, u = ctrl.calcular(r, y);
+    for (let s = 0; s < 100; s++) motor.paso(u, 1e-4, esc.carga(t));
+    alPaso(t, r, y, u);
+  }
+}
+
+async function entrarHIL(p) {
+  p.limpiar();
+  await p.escribir("h");
+  if ((await p.esperarPrefijo("# HIL")).includes("OFF")) {
+    await p.escribir("h");
+    await p.esperarPrefijo("# HIL ON");
+  }
+}
+
+async function correrHIL(p, esc, metodo, tiempoReal, alPaso, detener) {
+  await entrarHIL(p);
+  await p.escribir(LETRA[metodo]);
+  const motor = new MotorDC();
+  const n = Math.round(esc.duracion / TS);
+  let enviada = null;
+  const inicio = performance.now();
+  try {
+    for (let k = 0; k < n && !detener.v; k++) {
+      const t = k * TS;
+      if (tiempoReal) await ritmo(inicio, t);
+      const r = esc.referencia(t);
+      if (r !== enviada) { await p.escribir("r" + r.toFixed(1)); enviada = r; }
+      const y = motor.rpm;
+      await p.escribir("y" + y.toFixed(3));
+      const u = parseFloat((await p.esperarPrefijo("u")).slice(1));
+      for (let s = 0; s < 100; s++) motor.paso(u, 1e-4, esc.carga(t));
+      alPaso(t, r, y, u);
+    }
+  } finally {
+    await p.escribir("h");  // salir de HIL: el ESP32 apaga el motor
+  }
+}
+
+async function esperarParado(p) {
+  let quietas = 0;
+  const limite = performance.now() + 5000;
+  while (performance.now() < limite) {
+    const l = await p.siguiente(500);
+    const c = l && l.split(",");
+    if (!c || c.length !== 5) continue;
+    quietas = Math.abs(+c[2]) < 2 ? quietas + 1 : 0;
+    if (quietas >= 10) return;
+  }
+  throw new Error("El motor no se detuvo o el ESP32 no manda datos del encoder.");
+}
+
+async function correrReal(p, esc, metodo, alPaso, detener) {
+  await p.escribir("p");
+  await p.escribir(LETRA[metodo]);
+  p.limpiar();
+  await esperarParado(p);
+  await p.escribir("r" + esc.ref1.toFixed(1));
+  let t0 = null, cambiada = false;
+  const limite = performance.now() + (esc.duracion + 3) * 1000;
+  try {
+    while (!detener.v) {
+      if (performance.now() > limite) throw new Error("El ESP32 dejó de mandar datos. ¿Tiene el firmware con encoder?");
+      const l = await p.siguiente(500);
+      if (l === null) continue;
+      if (l.startsWith("# PROTECCION") || l.startsWith("# Sin sensor")) throw new Error(l.slice(2));
+      const c = l.split(",");
+      if (c.length !== 5) continue;
+      const [tms, r, y, u] = c.slice(0, 4).map(Number);
+      if ([tms, r, y, u].some(isNaN)) continue;
+      if (t0 === null) { if (Math.abs(r - esc.ref1) > 0.05) continue; t0 = tms; }
+      const t = (tms - t0) / 1000;
+      if (t >= esc.duracion) break;
+      if (t >= esc.t_cambio && !cambiada) { await p.escribir("r" + esc.ref2.toFixed(1)); cambiada = true; }
+      alPaso(t, r, y, u);
+    }
+  } finally {
+    await p.escribir("p");
+  }
+}
+
+// Motor real sin duración fija: la referencia la cambian los botones de velocidad
+async function correrRealLibre(p, metodo, alPaso, detener) {
+  await p.escribir("p");
+  await p.escribir(LETRA[metodo]);
+  p.limpiar();
+  let enviada = null, t0 = null;
+  try {
+    while (!detener.v) {
+      const ref = estado.libre.ref;
+      if (ref !== enviada) { await p.escribir("r" + ref.toFixed(1)); enviada = ref; }
+      const l = await p.siguiente(500);
+      if (l === null) continue;
+      if (l.startsWith("# PROTECCION")) throw new Error(l.slice(2));
+      const c = l.split(",");
+      if (c.length !== 5) continue;
+      const [tms, r, y, u] = c.slice(0, 4).map(Number);
+      if ([tms, r, y, u].some(isNaN)) continue;
+      if (t0 === null) t0 = tms;
+      alPaso((tms - t0) / 1000, r, y, u);
+    }
+  } finally {
+    await p.escribir("p");
+  }
+}
+
+// ===================================================================== Estado y UI
+const estado = { puerto: null, ocupado: false, detener: { v: false }, corridas: [], actual: null,
+                 esc: null, infer: null, ePrev: 0, sucio: true,
+                 objetivo: null,   // e, de normalizados más recientes (o del instante reproducido)
+                 vis: null,        // los mismos, suavizados para que el dibujo no brinque
+                 repro: { c: null, t: 0, play: false }, ultimoCuadro: performance.now() };
+const TAU_VISUAL = 0.12;  // [s] constante del suavizado visual (no afecta al control)
+// Modo libre (panel "Velocidad en palabras"): corre sin fin hasta Detener
+estado.libre = { activo: false, modo: "sim", ref: 0, c: null };
+estado.visVel = null;     // velocidad medida, suavizada para el dibujo
+const COLOR_VEL = ["--v0", "--v1", "--v2", "--v3", "--v4"];
+
+// Describe una velocidad con las dos etiquetas de mayor pertenencia
+function enPalabras(v, rpmMax) {
+  const mus = [0, 1, 2, 3, 4].map((j) => pertenenciaVelocidad(v, j, rpmMax));
+  const orden = [0, 1, 2, 3, 4].filter((j) => mus[j] >= 0.005).sort((a, b) => mus[b] - mus[a]);
+  const parte = (j) => `<b style="color:${css(COLOR_VEL[j])}">${Math.round(mus[j] * 100)} % ${VELOCIDADES[j]}</b>`;
+  return orden.length > 1 ? `${parte(orden[0])} y ${parte(orden[1])}` : parte(orden[0]);
+}
+
+function construirDeslizadorVel() {
+  const rpmMax = rpmMaxDelModo(estado.libre.activo ? estado.libre.modo : radio("modo"));
+  const tope = Math.round(0.95 * rpmMax);  // margen para que el controlador pueda corregir
+  const r = $("rVel");
+  r.max = tope;
+  r.step = rpmMax > 500 ? 10 : 1;
+  if (!estado.libre.activo) r.value = 0;
+  $("marcasVel").innerHTML = centrosVelocidad(rpmMax).map((c, j) =>
+    `<span style="left:${(c / tope) * 100}%; color:${css(COLOR_VEL[j])}"><b>${VELOCIDADES[j]}</b>${Math.round(c)}</span>`).join("");
+  mostrarObjetivo();
+}
+
+function mostrarObjetivo() {
+  const L = estado.libre;
+  if (!L.activo) { $("txtObjetivo").textContent = "Mueve el deslizador para arrancar el motor"; return; }
+  $("txtObjetivo").innerHTML = `Objetivo: <b>${L.ref} rpm</b> = ${enPalabras(L.ref, rpmMaxDelModo(L.modo))}`;
+}
+
+function fijarReferencia(v) {
+  const L = estado.libre;
+  L.ref = v;
+  if (!L.activo) {
+    if (v > 0) iniciarLibre();
+    return;
+  }
+  mostrarObjetivo();
+  $("txtLibre").textContent = "El motor sigue al deslizador · Detener para terminar";
+}
+
+async function iniciarLibre() {
+  const L = estado.libre;
+  const modo = radio("modo"), metodo = radio("metodo");
+  if (estado.ocupado) return;
+  if (modo !== "sim" && !estado.puerto) { mostrarMensaje("Primero conecta el ESP32."); return; }
+  mostrarMensaje("");
+  const rpmMax = rpmMaxDelModo(modo);
+  const c = { nombre: "Libre", metodo, color: "--s0", t: [], r: [], y: [], u: [], en: [], den: [] };
+  Object.assign(L, { activo: true, modo, c });
+  estado.ocupado = true; estado.detener.v = false; estado.ePrev = 0; estado.repro.play = false;
+  actualizarBotones();
+  mostrarObjetivo();
+  $("txtLibre").textContent = "El motor sigue al deslizador · Detener para terminar";
+  const alPaso = (t, r, y, u) => {
+    c.t.push(t); c.r.push(r); c.y.push(y); c.u.push(u);
+    const e = r - y, de = e - estado.ePrev;
+    estado.ePrev = e;
+    c.en.push(e / (0.2 * rpmMax)); c.den.push(de / (0.066 * rpmMax));
+    estado.objetivo = { e: c.en[c.en.length - 1], de: c.den[c.den.length - 1], metodo };
+    if (c.t.length > 6000) for (const k of ["t", "r", "y", "u", "en", "den"]) c[k].splice(0, 3000);
+    estado.sucio = true;
+  };
+  // Escenario sin fin: la referencia la pone el deslizador; la carga, la casilla
+  const esc = { duracion: Infinity, referencia: () => L.ref, carga: () => ($("cargaLibre").checked ? 0.03 : 0) };
+  try {
+    if (modo === "sim") await correrSim(esc, metodo, true, alPaso, estado.detener);
+    else if (modo === "hil") await correrHIL(estado.puerto, esc, metodo, true, alPaso, estado.detener);
+    else await correrRealLibre(estado.puerto, metodo, alPaso, estado.detener);
+  } catch (e) {
+    mostrarMensaje(e.message);
+  } finally {
+    Object.assign(L, { activo: false, ref: 0 });
+    estado.ocupado = false;
+    estado.sucio = true;
+    $("rVel").value = 0;
+    $("txtLibre").textContent = "Elige una velocidad para mover el motor";
+    mostrarObjetivo();
+    actualizarBotones();
+  }
+}
+
+// Velocidad que describe el panel: la corrida en curso, la reproducida o el encoder
+function velocidadActual() {
+  const ultima = (c) => (c && c.y.length ? c.y[c.y.length - 1] : null);
+  if (estado.libre.activo) return ultima(estado.libre.c);
+  if (estado.actual) return ultima(estado.actual);
+  if (estado.repro.c && estado.repro.y !== undefined) return estado.repro.y;
+  if (estado.puerto && estado.puerto.ultimo && radio("modo") === "real") return estado.puerto.ultimo.rpm;
+  return null;
+}
+const PALETA = ["--s0", "--s1", "--s2", "--s3", "--s4", "--s5"];
+
+function leerEscenario() {
+  const v = {};
+  for (const k of ["ref1", "ref2", "t_cambio", "t_carga", "par_carga", "duracion"]) {
+    v[k] = parseFloat($(k).value.replace(",", "."));
+    if (isNaN(v[k])) throw new Error("Todos los campos del escenario deben ser números.");
+  }
+  if (v.duracion < 0.2 || v.duracion > 20) throw new Error("La duración debe estar entre 0.2 y 20 s.");
+  const real = radio("modo") === "real";
+  const tope = real ? RPM_MAX_REAL : RPM_MAX_SIM;
+  if (Math.max(Math.abs(v.ref1), Math.abs(v.ref2)) > tope)
+    throw new Error(`${real ? "El motor real" : "El motor simulado"} llega a ${tope} rpm como máximo.`);
+  return Escenario(v);
+}
+
+function ponerEscenario() {
+  const modo = radio("modo");
+  const v = ESCENARIO[modo === "real" ? "real" : "sim"];
+  for (const k in v) $(k).value = v[k];
+  $("notaCarga").hidden = modo !== "real";
+  $("lblCarga").textContent = modo === "real" ? "Medir caída (1 = sí)" : "Par de carga [N·m]";
+  $("tiempoReal").disabled = modo === "real";
+}
+
+function mostrarMensaje(txt) { $("mensaje").textContent = txt; $("mensaje").hidden = !txt; }
+
+function actualizarBotones() {
+  const con = !!estado.puerto, oc = estado.ocupado;
+  $("bEjecutar").disabled = oc; $("bComparar").disabled = oc; $("bDetener").disabled = !oc;
+  $("bLimpiar").disabled = oc; $("bConectar").disabled = oc;
+  $("bAplicar").disabled = !con || oc; $("bParar").disabled = !con || oc;
+  document.querySelectorAll("input[name=modo], input[name=metodo]").forEach((r) => (r.disabled = oc));
+  const modo = radio("modo");
+  const puedeLibre = (!oc || estado.libre.activo) && (modo === "sim" || con);
+  $("rVel").disabled = !puedeLibre;
+  $("bLibreParar").disabled = !estado.libre.activo;
+  $("filaCargaLibre").hidden = (estado.libre.activo ? estado.libre.modo : modo) === "real";
+  if (estado.libre.activo) { $("bEjecutar").disabled = true; $("bComparar").disabled = true; }
+  const hayRepro = !!estado.repro.c && !oc;
+  $("bPlay").disabled = !hayRepro; $("selCorrida").disabled = !hayRepro; $("rTiempo").disabled = !hayRepro;
+  if (!hayRepro) $("txtTiempo").textContent = oc ? "en vivo" : "t = —";
+  $("bPlay").textContent = estado.repro.play ? "❚❚ Pausa" : "▶ Reproducir";
+  $("bConectar").textContent = con ? "Desconectar" : "Conectar ESP32";
+  $("punto").classList.toggle("on", con);
+  $("txtEstado").textContent = con ? (oc ? "Conectado · corriendo prueba" : "Conectado") : "Desconectado";
+}
+
+async function conectar() {
+  mostrarMensaje("");
+  if (estado.puerto) {
+    await estado.puerto.cerrar();
+    estado.puerto = null;
+    actualizarBotones();
+    return;
+  }
+  try {
+    $("txtEstado").textContent = "Conectando… (el ESP32 se reinicia)";
+    const p = new Puerto();
+    await p.abrir();
+    estado.puerto = p;
+    await p.escribir("p");
+  } catch (e) {
+    if (e.name !== "NotFoundError") mostrarMensaje("No se pudo abrir el puerto: " + e.message + " ¿Está abierto el Monitor Serie de Arduino o la otra interfaz?");
+  }
+  actualizarBotones();
+}
+
+function rpmMaxDelModo(modo) { return modo === "real" ? RPM_MAX_REAL : RPM_MAX_SIM; }
+
+async function lanzar(metodos) {
+  if (estado.ocupado) return;
+  mostrarMensaje("");
+  let esc;
+  try { esc = leerEscenario(); } catch (e) { mostrarMensaje(e.message); return; }
+  const modo = radio("modo");
+  if (modo !== "sim" && !estado.puerto) { mostrarMensaje("Primero conecta el ESP32."); return; }
+  estado.ocupado = true; estado.detener.v = false; estado.esc = esc;
+  actualizarBotones();
+  const rpmMax = rpmMaxDelModo(modo);
+  try {
+    for (const metodo of metodos) {
+      if (estado.detener.v) break;
+      const color = PALETA[estado.corridas.length % PALETA.length];
+      const c = { nombre: `${PREFIJO[modo]} ${NOMBRES[metodo]}`, metodo, color,
+                  t: [], r: [], y: [], u: [], en: [], den: [] };
+      estado.corridas.push(c);
+      estado.actual = c;
+      estado.ePrev = 0;
+      estado.repro.play = false;
+      $("txtCorrida").textContent = "Corriendo: " + c.nombre;
+      const alPaso = (t, r, y, u) => {
+        c.t.push(t); c.r.push(r); c.y.push(y); c.u.push(u);
+        // e y de normalizados con las mismas ganancias que usó el controlador
+        const e = r - y, de = e - estado.ePrev;
+        estado.ePrev = e;
+        c.en.push(e / (0.2 * rpmMax));
+        c.den.push(de / (0.066 * rpmMax));
+        estado.objetivo = { e: c.en[c.en.length - 1], de: c.den[c.den.length - 1], metodo };
+        estado.sucio = true;
+      };
+      if (modo === "sim") await correrSim(esc, metodo, $("tiempoReal").checked, alPaso, estado.detener);
+      else if (modo === "hil") await correrHIL(estado.puerto, esc, metodo, $("tiempoReal").checked, alPaso, estado.detener);
+      else await correrReal(estado.puerto, esc, metodo, alPaso, estado.detener);
+      agregarMetricas(c, esc);
+    }
+  } catch (e) {
+    mostrarMensaje(e.message);
+  } finally {
+    estado.ocupado = false;
+    estado.actual = null;
+    $("txtCorrida").textContent = "";
+    estado.sucio = true;
+    actualizarCorridas();
+    actualizarBotones();
+  }
+}
+
+// ===================================================================== Reproducción
+function actualizarCorridas() {
+  const sel = $("selCorrida");
+  const validas = estado.corridas.filter((c) => c.t.length > 1);
+  sel.innerHTML = validas.map((c) => `<option value="${estado.corridas.indexOf(c)}">${c.nombre}</option>`).join("");
+  if (validas.length) {
+    const ultima = validas[validas.length - 1];
+    sel.value = estado.corridas.indexOf(ultima);
+    elegirCorrida(ultima, ultima.t[ultima.t.length - 1]);
+  } else {
+    estado.repro.c = null;
+  }
+}
+
+function elegirCorrida(c, t) {
+  estado.repro.c = c;
+  estado.repro.play = false;
+  $("rTiempo").max = c.t[c.t.length - 1];
+  irA(t);
+}
+
+function irA(t) {
+  const c = estado.repro.c;
+  if (!c) return;
+  const tmax = c.t[c.t.length - 1];
+  t = Math.min(Math.max(t, 0), tmax);
+  estado.repro.t = t;
+  let lo = 0, hi = c.t.length - 1;  // búsqueda binaria del instante más cercano por debajo
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (c.t[m] <= t) lo = m; else hi = m - 1; }
+  estado.objetivo = { e: c.en[lo], de: c.den[lo], metodo: c.metodo };
+  estado.repro.y = c.y[lo];
+  $("rTiempo").value = t;
+  $("txtTiempo").textContent = `t = ${t.toFixed(2)} s`;
+  estado.sucio = true;
+}
+
+function alternarReproduccion() {
+  const r = estado.repro;
+  if (!r.c) return;
+  if (!r.play && r.t >= r.c.t[r.c.t.length - 1] - 1e-6) irA(0);
+  r.play = !r.play;
+}
+
+function agregarMetricas(c, esc) {
+  if (c.t.length < 10) return;
+  const m = metricas(c.t, c.r, c.y, 0, esc.t_cambio);
+  let caida = null;
+  if (esc.par_carga > 0) {
+    caida = -Infinity;
+    c.t.forEach((t, k) => { if (t >= esc.t_carga) caida = Math.max(caida, c.r[k] - c.y[k]); });
+    if (!isFinite(caida)) caida = null;
+  }
+  const f = (x, d) => (x === null || x === undefined || isNaN(x) ? "—" : x.toFixed(d));
+  const tb = $("tMetricas");
+  if (tb.querySelector(".vacio")) tb.innerHTML = "";
+  const fila = document.createElement("tr");
+  fila.innerHTML = `<td><span class="punto" style="background:${css(c.color)}"></span>${c.nombre}</td>
+    <td>${f(m && m.sobrepaso, 2)}</td><td>${f(m && m.tSubida, 3)}</td><td>${f(m && m.tEstab, 3)}</td>
+    <td>${f(m && m.errorFinal, 1)}</td><td>${f(m && m.iae, 1)}</td><td>${f(caida, 1)}</td>`;
+  tb.appendChild(fila);
+}
+
+function limpiar() {
+  estado.corridas = []; estado.infer = null; estado.objetivo = null; estado.vis = null; estado.sucio = true;
+  actualizarCorridas();
+  actualizarBotones();
+  $("tMetricas").innerHTML = '<tr><td class="vacio" colspan="7">Todavía no hay corridas</td></tr>';
+}
+
+function guardar() {
+  if (!estado.corridas.length) { mostrarMensaje("Todavía no hay corridas para guardar."); return; }
+  const sello = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  let csv = "corrida,t_s,ref_rpm,rpm,u_V\n";
+  for (const c of estado.corridas)
+    c.t.forEach((t, k) => { csv += `${c.nombre},${t.toFixed(3)},${c.r[k]},${c.y[k].toFixed(2)},${c.u[k].toFixed(3)}\n`; });
+  descargar(new Blob([csv], { type: "text/csv" }), `resultados_${sello}.csv`);
+  const a = $("cVel"), b = $("cVolt");
+  const lienzo = document.createElement("canvas");
+  lienzo.width = a.width; lienzo.height = a.height + b.height;
+  const g = lienzo.getContext("2d");
+  g.fillStyle = css("--panel"); g.fillRect(0, 0, lienzo.width, lienzo.height);
+  g.drawImage(a, 0, 0); g.drawImage(b, 0, a.height);
+  lienzo.toBlob((blob) => descargar(blob, `grafica_${sello}.png`));
+}
+
+function descargar(blob, nombre) {
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), { href: url, download: nombre });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ===================================================================== Dibujo
+function preparar(cv) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  }
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  return { g, w, h };
+}
+
+function marcas(a, b, n) {
+  const paso0 = (b - a) / n;
+  const mag = 10 ** Math.floor(Math.log10(paso0));
+  const f = paso0 / mag;
+  const paso = (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * mag;
+  const out = [];
+  for (let v = Math.ceil(a / paso) * paso; v <= b + 1e-9; v += paso) out.push(+v.toFixed(10));
+  return out;
+}
+
+function grafica(cv, { series, xmin = 0, xmax, ymin, ymax, ylabel, xlabel, marcador = null }) {
+  const { g, w, h } = preparar(cv);
+  const m = { l: 52, r: 12, t: 8, b: xlabel ? 34 : 18 };
+  const pw = w - m.l - m.r, ph = h - m.t - m.b;
+  const X = (x) => m.l + ((x - xmin) / (xmax - xmin)) * pw;
+  const Y = (y) => m.t + (1 - (y - ymin) / (ymax - ymin)) * ph;
+  g.font = "11px system-ui, sans-serif";
+  g.lineWidth = 1;
+  g.strokeStyle = css("--grid"); g.fillStyle = css("--suave");
+  g.textAlign = "right"; g.textBaseline = "middle";
+  for (const v of marcas(ymin, ymax, 5)) {
+    g.beginPath(); g.moveTo(m.l, Y(v)); g.lineTo(w - m.r, Y(v)); g.stroke();
+    g.fillText(String(v), m.l - 6, Y(v));
+  }
+  g.textAlign = "center"; g.textBaseline = "top";
+  for (const v of marcas(xmin, xmax, 8)) {
+    g.beginPath(); g.moveTo(X(v), m.t); g.lineTo(X(v), m.t + ph); g.stroke();
+    if (xlabel) g.fillText(String(v), X(v), m.t + ph + 4);
+  }
+  g.strokeStyle = css("--eje"); g.strokeRect(m.l, m.t, pw, ph);
+  g.save();
+  g.translate(13, m.t + ph / 2); g.rotate(-Math.PI / 2); g.textBaseline = "middle"; g.fillText(ylabel, 0, 0);
+  g.restore();
+  if (xlabel) { g.textBaseline = "bottom"; g.fillText(xlabel, m.l + pw / 2, h); }
+  g.save();
+  g.beginPath(); g.rect(m.l, m.t, pw, ph); g.clip();
+  for (const s of series) {
+    if (!s.t.length) continue;
+    g.strokeStyle = s.color; g.lineWidth = s.ancho || 2; g.setLineDash(s.guion || []);
+    g.beginPath();
+    g.moveTo(X(s.t[0]), Y(s.y[0]));
+    for (let k = 1; k < s.t.length; k++) {
+      if (s.escalon) g.lineTo(X(s.t[k]), Y(s.y[k - 1]));
+      g.lineTo(X(s.t[k]), Y(s.y[k]));
+    }
+    g.stroke();
+  }
+  if (marcador !== null) {  // instante que muestra la reproducción
+    g.setLineDash([]); g.strokeStyle = css("--acento"); g.lineWidth = 2;
+    g.beginPath(); g.moveTo(X(marcador), m.t); g.lineTo(X(marcador), m.t + ph); g.stroke();
+  }
+  g.restore();
+  g.setLineDash([]);
+}
+
+// Modo libre: ventana deslizante con los últimos 10 s
+function dibujarGraficasLibre() {
+  const c = estado.libre.c;
+  const tfin = c.t.length ? c.t[c.t.length - 1] : 0;
+  const xmax = Math.max(10, tfin), xmin = xmax - 10;
+  const rpmMax = rpmMaxDelModo(estado.libre.modo);
+  grafica($("cVel"), {
+    series: [{ t: c.t, y: c.r, color: css("--ref"), guion: [6, 4], ancho: 1.5, escalon: true },
+             { t: c.t, y: c.y, color: css("--s0") }],
+    xmin, xmax, ymin: -0.05 * rpmMax, ymax: 1.05 * rpmMax, ylabel: "Velocidad [rpm]",
+  });
+  const negativo = c.u.some((v) => v < -0.5);
+  grafica($("cVolt"), {
+    series: [{ t: c.t, y: c.u, color: css("--s0"), escalon: true, ancho: 1.5 }],
+    xmin, xmax, ymin: negativo ? -12.5 : -1, ymax: 12.5, ylabel: "Voltaje [V]", xlabel: "Tiempo [s]",
+  });
+  $("leyenda").innerHTML = `<span><i style="background:${css("--ref")}"></i>Referencia</span>` +
+    `<span><i style="background:${css("--s0")}"></i>Velocidad (${PREFIJO[estado.libre.modo]} ${NOMBRES[c.metodo]})</span>`;
+}
+
+function dibujarGraficas() {
+  if (estado.libre.activo && estado.libre.c) { dibujarGraficasLibre(); return; }
+  const esc = estado.esc || Escenario(ESCENARIO.sim);
+  const xmax = esc.duracion;
+  const tRef = []; const yRef = [];
+  for (let t = 0; t <= xmax + 1e-9; t += TS) { tRef.push(t); yRef.push(esc.referencia(t)); }
+  let ymax = Math.max(esc.ref1, esc.ref2);
+  for (const c of estado.corridas) for (const v of c.y) if (v > ymax) ymax = v;
+  const ymin = Math.min(0, esc.ref1, esc.ref2);
+  const margen = (ymax - ymin) * 0.12 || 10;
+  const series = [{ t: tRef, y: yRef, color: css("--ref"), guion: [6, 4], ancho: 1.5 }];
+  for (const c of estado.corridas) series.push({ t: c.t, y: c.y, color: css(c.color) });
+  const marcador = estado.repro.c && !estado.ocupado ? estado.repro.t : null;
+  grafica($("cVel"), { series, xmax, ymin: ymin - margen * 0.3, ymax: ymax + margen, ylabel: "Velocidad [rpm]", marcador });
+  grafica($("cVolt"), {
+    series: estado.corridas.map((c) => ({ t: c.t, y: c.u, color: css(c.color), escalon: true, ancho: 1.5 })),
+    xmax, ymin: -1, ymax: 12.5, ylabel: "Voltaje [V]", xlabel: "Tiempo [s]", marcador,
+  });
+  $("leyenda").innerHTML = `<span><i style="background:${css("--ref")}"></i>Referencia</span>` +
+    estado.corridas.map((c) => `<span><i style="background:${css(c.color)}"></i>${c.nombre}</span>`).join("");
+}
+
+// Universo [-1, 1] con los 5 triángulos; resalta según el grado y marca el valor actual
+function dibujarConjuntos(cv, x, mus) {
+  const { g, w, h } = preparar(cv);
+  const m = { l: 8, r: 8, t: 8, b: 18 };
+  const pw = w - m.l - m.r, ph = h - m.t - m.b;
+  const X = (v) => m.l + ((v + 1) / 2) * pw, Y = (v) => m.t + (1 - v) * ph;
+  g.strokeStyle = css("--grid"); g.lineWidth = 1;
+  g.beginPath(); g.moveTo(m.l, Y(0)); g.lineTo(w - m.r, Y(0)); g.stroke();
+  const xs = Array.from({ length: 201 }, (_, k) => -1 + k * 0.01);
+  for (let j = 0; j < 5; j++) {
+    const color = css(COLOR_ETQ[j]);
+    const activo = mus && mus[j] > 0;
+    const trazo = () => { g.beginPath(); xs.forEach((v, k) => (k ? g.lineTo(X(v), Y(pertenencia(v, j))) : g.moveTo(X(v), Y(pertenencia(v, j))))); };
+    trazo();  // relleno: más intenso cuanto mayor el grado de pertenencia
+    g.lineTo(X(1), Y(0)); g.lineTo(X(-1), Y(0)); g.closePath();
+    g.globalAlpha = activo ? 0.15 + 0.5 * mus[j] : 0.06;
+    g.fillStyle = color; g.fill();
+    g.globalAlpha = 1; g.strokeStyle = color; g.lineWidth = activo ? 2 : 1;
+    trazo(); g.stroke();
+  }
+  g.fillStyle = css("--suave"); g.font = "10px system-ui, sans-serif"; g.textAlign = "center"; g.textBaseline = "top";
+  CENTROS.forEach((c, j) => g.fillText(ETIQUETAS[j], X(c), m.t + ph + 4));
+  if (x === null) return;
+  g.strokeStyle = css("--texto"); g.lineWidth = 2;
+  g.beginPath(); g.moveTo(X(x), m.t); g.lineTo(X(x), m.t + ph); g.stroke();
+  mus.forEach((mu, j) => {
+    if (mu <= 0) return;
+    g.fillStyle = css(COLOR_ETQ[j]);
+    g.beginPath(); g.arc(X(x), Y(mu), 4.5, 0, 2 * Math.PI); g.fill();
+  });
+}
+
+function dibujarSalida(cv, inf) {
+  const { g, w, h } = preparar(cv);
+  const m = { l: 8, r: 8, t: 8, b: 18 };
+  const pw = w - m.l - m.r, ph = h - m.t - m.b;
+  const X = (v) => m.l + ((v + 1) / 2) * pw, Y = (v) => m.t + (1 - v) * ph;
+  g.strokeStyle = css("--grid"); g.lineWidth = 1;
+  g.beginPath(); g.moveTo(m.l, Y(0)); g.lineTo(w - m.r, Y(0)); g.stroke();
+  g.fillStyle = css("--suave"); g.font = "10px system-ui, sans-serif"; g.textAlign = "center"; g.textBaseline = "top";
+  CENTROS.forEach((c, j) => g.fillText(ETIQUETAS[j], X(c), m.t + ph + 4));
+  if (!inf) return;
+  if (inf.agregado) {
+    // Mamdani: triángulos tenues, área recortada y unida, centroide
+    for (let j = 0; j < 5; j++) {
+      g.strokeStyle = css(COLOR_ETQ[j]); g.globalAlpha = 0.35; g.lineWidth = 1;
+      g.beginPath();
+      for (let k = 0; k <= 200; k++) { const x = -1 + k * 0.01; const y = pertenencia(x, j); k ? g.lineTo(X(x), Y(y)) : g.moveTo(X(x), Y(y)); }
+      g.stroke();
+    }
+    g.globalAlpha = 0.55; g.fillStyle = css("--acento");
+    g.beginPath(); g.moveTo(X(-1), Y(0));
+    inf.agregado.forEach((a, k) => g.lineTo(X(-1 + k * 0.01), Y(a)));
+    g.lineTo(X(1), Y(0)); g.closePath(); g.fill();
+    g.globalAlpha = 1;
+  } else {
+    // Sugeno: un "palito" por etiqueta con su peso (suma de fuerzas)
+    const tope = Math.max(1, ...inf.S);
+    inf.S.forEach((s, j) => {
+      if (s <= 0) return;
+      g.strokeStyle = css(COLOR_ETQ[j]); g.lineWidth = 6;
+      g.beginPath(); g.moveTo(X(CENTROS[j]), Y(0)); g.lineTo(X(CENTROS[j]), Y(s / tope)); g.stroke();
+    });
+  }
+  g.strokeStyle = css("--texto"); g.lineWidth = 2; g.setLineDash([4, 3]);
+  g.beginPath(); g.moveTo(X(inf.du), m.t); g.lineTo(X(inf.du), m.t + ph); g.stroke(); g.setLineDash([]);
+}
+
+// Panel "Velocidad en palabras": triángulos de la variable velocidad + cursor
+function dibujarVelocidad() {
+  const modo = estado.libre.activo ? estado.libre.modo : radio("modo");
+  const rpmMax = rpmMaxDelModo(modo);
+  const v = estado.visVel;
+  const mus = v === null ? null : [0, 1, 2, 3, 4].map((j) => pertenenciaVelocidad(v, j, rpmMax));
+  const { g, w, h } = preparar($("cVelLing"));
+  const m = { l: 10, r: 10, t: 10, b: 20 };
+  const pw = w - m.l - m.r, ph = h - m.t - m.b;
+  const vmin = -0.05 * rpmMax, vmax = 1.02 * rpmMax;
+  const X = (x) => m.l + ((x - vmin) / (vmax - vmin)) * pw, Y = (y) => m.t + (1 - y) * ph;
+  const xs = Array.from({ length: 241 }, (_, k) => vmin + (k / 240) * (vmax - vmin));
+  for (let j = 0; j < 5; j++) {
+    const color = css(COLOR_VEL[j]);
+    const activo = mus && mus[j] > 0;
+    const trazo = () => { g.beginPath(); xs.forEach((x, k) => (k ? g.lineTo(X(x), Y(pertenenciaVelocidad(x, j, rpmMax))) : g.moveTo(X(x), Y(pertenenciaVelocidad(x, j, rpmMax))))); };
+    trazo(); g.lineTo(X(vmax), Y(0)); g.lineTo(X(vmin), Y(0)); g.closePath();
+    g.globalAlpha = activo ? 0.15 + 0.55 * mus[j] : 0.06; g.fillStyle = color; g.fill();
+    g.globalAlpha = 1; g.strokeStyle = color; g.lineWidth = activo ? 2.5 : 1; trazo(); g.stroke();
+  }
+  g.fillStyle = css("--suave"); g.font = "11px system-ui, sans-serif"; g.textAlign = "center"; g.textBaseline = "top";
+  centrosVelocidad(rpmMax).forEach((c, j) => g.fillText(`${VELOCIDADES[j]} · ${Math.round(c)}`, X(c), m.t + ph + 5));
+  if (estado.libre.activo) {  // referencia elegida
+    g.strokeStyle = css("--acento"); g.lineWidth = 2; g.setLineDash([5, 4]);
+    g.beginPath(); g.moveTo(X(estado.libre.ref), m.t); g.lineTo(X(estado.libre.ref), m.t + ph); g.stroke(); g.setLineDash([]);
+  }
+  if (v !== null) {
+    const xv = Math.min(Math.max(v, vmin), vmax);
+    g.strokeStyle = css("--texto"); g.lineWidth = 2;
+    g.beginPath(); g.moveTo(X(xv), m.t); g.lineTo(X(xv), m.t + ph); g.stroke();
+    mus.forEach((mu, j) => { if (mu > 0) { g.fillStyle = css(COLOR_VEL[j]); g.beginPath(); g.arc(X(xv), Y(mu), 5, 0, 2 * Math.PI); g.fill(); } });
+  }
+  // Frase y porcentajes
+  $("chipsVel").innerHTML = VELOCIDADES.map((nombre, j) => {
+    const mu = mus ? mus[j] : 0;
+    const fondo = mu > 0 ? `background:color-mix(in srgb, ${css(COLOR_VEL[j])} ${Math.round(15 + 70 * mu)}%, transparent)` : "";
+    return `<span class="chip" style="${fondo}">${nombre}<br>${mus ? Math.round(mu * 100) + "%" : "—"}</span>`;
+  }).join("");
+  if (!mus) { $("fraseVel").textContent = "—"; return; }
+  const orden = [0, 1, 2, 3, 4].filter((j) => mus[j] >= 0.005).sort((a, b) => mus[b] - mus[a]);
+  const parte = (j) => `<b style="color:${css(COLOR_VEL[j])}">${Math.round(mus[j] * 100)} % ${VELOCIDADES[j]}</b>`;
+  $("fraseVel").innerHTML = `Va a <b>${v.toFixed(1)} rpm</b>: ` +
+    (orden.length > 1 ? `${parte(orden[0])} y ${parte(orden[1])}` : parte(orden[0]));
+}
+
+function chips(id, mus) {
+  $(id).innerHTML = ETIQUETAS.map((et, j) => {
+    const mu = mus ? mus[j] : 0;
+    const fondo = mu > 0 ? `background:color-mix(in srgb, ${css(COLOR_ETQ[j])} ${Math.round(15 + 70 * mu)}%, transparent)` : "";
+    return `<span class="chip" style="${fondo}">${et}<br>${mus ? Math.round(mu * 100) + "%" : "—"}</span>`;
+  }).join("");
+}
+
+function tablaReglas(inf) {
+  let html = `<tr><th></th>${ETIQUETAS.map((d) => `<th>${d}</th>`).join("")}</tr>`;
+  for (let i = 0; i < 5; i++) {
+    html += `<tr><th>${ETIQUETAS[i]}</th>`;
+    for (let j = 0; j < 5; j++) {
+      const w = inf ? inf.fuerzas[i][j] : 0;
+      const o = REGLAS[i][j];
+      const fondo = w > 0 ? `background:color-mix(in srgb, ${css(COLOR_ETQ[o])} ${Math.round(20 + 75 * w)}%, transparent); font-weight:600` : "";
+      html += `<td style="${fondo}" title="SI e es ${ETIQUETAS[i]} Y de es ${ETIQUETAS[j]} ENTONCES du es ${ETIQUETAS[o]} — fuerza ${w.toFixed(2)}">${ETIQUETAS[o]}</td>`;
+    }
+    html += "</tr>";
+  }
+  html += `<tr><th colspan="6" style="font-weight:400; padding-top:4px">filas: e · columnas: de · celda: du</th></tr>`;
+  $("tReglas").innerHTML = html;
+}
+
+function dibujarInferencia() {
+  const inf = estado.infer;
+  const metodo = inf ? inf.metodo : radio("metodo");
+  dibujarConjuntos($("cE"), inf ? inf.e : null, inf ? inf.muE : null);
+  dibujarConjuntos($("cDE"), inf ? inf.de : null, inf ? inf.muDE : null);
+  dibujarSalida($("cDU"), inf);
+  chips("chipsE", inf && inf.muE);
+  chips("chipsDE", inf && inf.muDE);
+  tablaReglas(inf);
+  $("vE").textContent = inf ? inf.e.toFixed(2) : "—";
+  $("vDE").textContent = inf ? inf.de.toFixed(2) : "—";
+  $("vDU").textContent = inf ? inf.du.toFixed(3) : "—";
+  $("tituloSalida").textContent = `Salida du — ${metodo === "sugeno" ? "Sugeno (pesos)" : "Mamdani (área y centroide)"}`;
+  $("notaSalida").textContent = metodo === "pi"
+    ? "El PI no usa estas reglas; se muestra la inferencia de Mamdani con el mismo error como referencia."
+    : metodo === "sugeno" ? "Línea punteada = promedio ponderado Σ(w·z)/Σw." : "Línea punteada = centroide del área.";
+  if (inf) {
+    const d = etiquetaDominante(inf.muE);
+    $("led").style.background = css(COLOR_ETQ[d]);
+    $("txtDominante").textContent = `Etiqueta dominante del error: ${ETIQUETAS[d]} (color del LED)`;
+  } else {
+    $("led").style.background = css("--eje");
+    $("txtDominante").textContent = "Etiqueta dominante del error: —";
+  }
+}
+
+function cuadro(ahora) {
+  const dt = Math.min((ahora - estado.ultimoCuadro) / 1000, 0.1);
+  estado.ultimoCuadro = ahora;
+  const r = estado.repro;
+  if (r.play && r.c) {
+    irA(r.t + dt * parseFloat($("selVel").value));
+    if (r.t >= r.c.t[r.c.t.length - 1] - 1e-6) r.play = false;
+    $("bPlay").textContent = r.play ? "❚❚ Pausa" : "▶ Reproducir";
+  }
+  // Suavizado visual: lo que se dibuja se acerca a los datos con una constante
+  // de 0.12 s, así el cursor y las reglas se deslizan en vez de brincar cada 10 ms.
+  const obj = estado.objetivo;
+  let inferSucia = false;
+  if (obj) {
+    if (!estado.vis) estado.vis = { ...obj };
+    const a = 1 - Math.exp(-dt / TAU_VISUAL);
+    const v = estado.vis;
+    const cambio = Math.abs(obj.e - v.e) + Math.abs(obj.de - v.de);
+    if (cambio > 1e-5 || v.metodo !== obj.metodo || !estado.infer) {
+      v.e += (obj.e - v.e) * a;
+      v.de += (obj.de - v.de) * a;
+      v.metodo = obj.metodo;
+      estado.infer = fis(v.e, v.de, obj.metodo !== "sugeno");
+      estado.infer.metodo = obj.metodo;
+      inferSucia = true;
+    }
+  }
+  if (estado.sucio) { dibujarGraficas(); dibujarInferencia(); estado.sucio = false; }
+  else if (inferSucia) dibujarInferencia();
+  // Velocidad en palabras: misma idea de suavizado sobre la velocidad medida
+  const vReal = velocidadActual();
+  if (vReal === null) {
+    if (estado.visVel !== null) { estado.visVel = null; dibujarVelocidad(); }
+  } else {
+    if (estado.visVel === null) estado.visVel = vReal;
+    const a = 1 - Math.exp(-dt / TAU_VISUAL);
+    const antes = estado.visVel;
+    estado.visVel += (vReal - estado.visVel) * a;
+    if (Math.abs(estado.visVel - antes) > 1e-3 || estado.libre.activo) dibujarVelocidad();
+  }
+  const u = estado.puerto && estado.puerto.ultimo;
+  $("lectura").textContent = u && !estado.ocupado ? `Encoder: ${u.rpm.toFixed(1)} rpm · voltaje ${u.u.toFixed(2)} V` : "";
+  requestAnimationFrame(cuadro);
+}
+
+// ===================================================================== Arranque
+if (!("serial" in navigator)) { $("avisoSerial").hidden = false; $("bConectar").disabled = true; }
+document.querySelectorAll("input[name=modo]").forEach((r) => r.addEventListener("change", () => {
+  ponerEscenario(); construirDeslizadorVel(); actualizarBotones(); dibujarVelocidad(); estado.sucio = true;
+}));
+document.querySelectorAll("input[name=metodo]").forEach((r) => r.addEventListener("change", () => (estado.sucio = true)));
+$("bConectar").onclick = conectar;
+$("bEjecutar").onclick = () => lanzar([radio("metodo")]);
+$("bComparar").onclick = () => lanzar(["mamdani", "sugeno", "pi"]);
+$("bDetener").onclick = () => (estado.detener.v = true);
+$("bLimpiar").onclick = limpiar;
+$("bGuardar").onclick = guardar;
+$("voltaje").oninput = () => ($("txtVoltaje").textContent = (+$("voltaje").value).toFixed(1) + " V");
+$("bAplicar").onclick = () => estado.puerto.escribir("v" + (+$("voltaje").value).toFixed(2));
+$("bParar").onclick = () => { $("voltaje").value = 0; $("txtVoltaje").textContent = "0.0 V"; estado.puerto.escribir("p"); };
+$("bPlay").onclick = () => { alternarReproduccion(); actualizarBotones(); };
+$("rTiempo").oninput = () => { estado.repro.play = false; irA(parseFloat($("rTiempo").value)); actualizarBotones(); };
+$("selCorrida").onchange = () => { const c = estado.corridas[+$("selCorrida").value]; if (c) elegirCorrida(c, 0); actualizarBotones(); };
+addEventListener("resize", () => (estado.sucio = true));
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => (estado.sucio = true));
+addEventListener("beforeunload", () => { if (estado.puerto) estado.puerto.escribir("p"); });
+ponerEscenario();
+construirDeslizadorVel();
+$("rVel").oninput = () => fijarReferencia(+$("rVel").value);
+$("bLibreParar").onclick = () => (estado.detener.v = true);
+actualizarBotones();
+dibujarVelocidad();
+requestAnimationFrame(cuadro);
+</script>
+</body>
+</html>
