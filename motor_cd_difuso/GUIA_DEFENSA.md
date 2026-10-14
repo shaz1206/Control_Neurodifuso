@@ -104,35 +104,49 @@ Dan resultados casi iguales. Sugeno es más barato de calcular (no recorre 201 p
 - Error final.
 - IAE (integral del error absoluto).
 
-## 6. ESP32 y HIL
+## 6. ESP32-S3, encoder y motor real
 
-**¿Cómo miden la velocidad del motor físico?**
-No la medimos: no tenemos sensor. Por eso la Fase B es **HIL**. La velocidad viene del modelo en la PC, y el ESP32 calcula el voltaje con el FIS. Ese voltaje también se aplica al motor físico para verlo reaccionar, pero el motor real está en **lazo abierto**: si lo frenan con la mano, el controlador no se entera.
+**¿Cómo miden la velocidad del motor?**
+Con el encoder Hall del GA25-370: dos señales, A y B, desfasadas 90°. Una interrupción se dispara en **cada flanco de A y de B** y una tabla de cuadratura suma +1 o −1 según el sentido. Eso es la lectura **×4**: 11 pulsos × 4 flancos × 45 de reducción = **1980 cuentas por vuelta**. Cada 10 ms: `rpm = (cuentas / 1980) · (60 / 0.01)`, más un filtro pasa-bajas (α = 0.4).
 
-**Entonces, ¿qué demuestra el motor girando?**
-Que la cadena completa funciona con hardware real: FIS en el ESP32 → PWM → puente H → motor. Y que el voltaje hace lo esperado: arranque fuerte, bajada en 1.5 s, más voltaje cuando entra la carga en 2.5 s.
+**¿Por qué leer ×4 y no solo un canal?**
+A 90 rpm, con un solo canal serían ~7 pulsos cada 10 ms: saltos de ~13 rpm entre mediciones. Con ×4 son ~30 cuentas: saltos de 3 rpm. Además, con dos canales se sabe el sentido de giro.
 
-**¿Qué necesitarían para el lazo cerrado real?**
-Un sensor de velocidad. El más barato es un optoacoplador de ranura (FC-03) con un disco ranurado. Con un encoder, el firmware contaría pulsos con una interrupción: `rpm = (pulsos / PULSOS_POR_VUELTA) · (60 / 0.01)`, más un filtro pasa-bajas (α = 0.4). Ese código ya está: basta con poner `HAY_SENSOR = true`.
+**¿Cómo verificaron las 1980 cuentas?**
+Con `calibrar_encoder.py`: el motor gira despacio y contamos 10 vueltas a ojo con una marca en el eje. Salieron 1982 por vuelta, o sea una reducción de 1:45.0.
 
-**¿Por qué el HIL corre a tiempo real?**
-Para que el motor físico reciba cada voltaje durante 10 ms, igual que en el modelo. Si corriera más rápido, el motor no alcanzaría a reaccionar.
+**¿Qué diferencia hay entre HIL y el motor real?**
+En HIL la velocidad sale de un modelo en la PC: demuestra que el código en C hace lo mismo que el de Python. En el motor real la velocidad sale del encoder y el ESP32 controla solo, en **lazo cerrado**: si frenan el eje con los dedos, el controlador lo nota y sube el voltaje.
 
-**¿Qué pasa si se cierra el script a mitad del HIL?**
-El ESP32 tiene un "watchdog": si pasan 300 ms sin recibir datos de la PC, apaga el motor.
+**¿Por qué las ganancias dependen de las rpm máximas?**
+El motor simulado llega a 2274 rpm y el real a 113. Ke y Kde están expresadas como fracción de la velocidad máxima (20 % y 6.6 %), así que la misma sintonía sirve para los dos: un error "grande" son 455 rpm en el modelo y 23 rpm en el motor real.
+
+**¿Qué es la zona muerta y cómo la midieron?**
+Es el voltaje mínimo para vencer la fricción. Con una rampa de voltaje sin compensación vimos que el motor arranca entre 6 y 8 V y se detiene en ~5 V. Por encima, la velocidad sube casi en línea recta y esa recta cruza el cero en ~6.3 V. El firmware usa 6.0 V: el rango 0–12 V del controlador se convierte en 6–12 V reales.
+
+**¿Por qué al bajar de velocidad no se permite voltaje negativo?**
+Antes, al bajar de 90 a 60 rpm el controlador pedía ~−1 V. Con la compensación de zona muerta eso eran **~−6.5 V reales**: un frenazo que hundía la velocidad hasta 38 rpm. Ahora, si la referencia es positiva, el voltaje mínimo es 0: el motor queda libre y lo frena su propia fricción. La caída bajó a ~50 rpm. En HIL no se limita, para que siga idéntico a Python.
+
+**¿Qué hace "Parado" (referencia 0)?**
+Deja el motor libre (0 V) y reinicia el controlador. Si se intentara controlar alrededor de 0 rpm, la zona muerta daría patadas de ±6 V.
+
+**¿Qué protecciones tiene?**
+Si el voltaje está al máximo durante 1 s y el motor no gira, o si el encoder cuenta al revés, el ESP32 apaga el motor y manda un aviso. En HIL, si la PC deja de mandar datos 300 ms, también lo apaga.
 
 **¿Cómo se aplica el voltaje?**
-Con PWM de 20 kHz y 10 bits: `duty = |u| / 12 · 1023`. IN1/IN2 eligen el sentido. Usamos 20 kHz para que no se oiga el zumbido.
+PWM de 20 kHz y 10 bits en ENA (`duty = |u| / 12 · 1023`); IN1/IN2 eligen el sentido. A 20 kHz no se oye el zumbido.
 
-**¿Qué es la zona muerta?**
-Es el voltaje mínimo que el motor necesita para vencer la fricción estática. Por debajo de él no gira. El firmware la compensa sumando ese voltaje mínimo.
+**¿Qué muestra el LED?**
+La etiqueta con mayor pertenencia del error: rojo NG, amarillo NP, verde Z, cian PP, azul PG. Al arrancar se ve azul → cian → verde.
 
-**¿Qué es HIL y qué demuestra?**
-Hardware-in-the-Loop: el controlador corre en el hardware real (ESP32) y la planta se simula en la PC. Demuestra que el código embebido (C, float32, tiempo discreto) hace exactamente lo mismo que el diseño en Python antes de arriesgar el motor.
+**¿Qué resultados dio el motor real (90 → 60 rpm)?**
+Los tres controladores llegan en ~0.12 s con menos de 0.3 rpm de error. Al bajar, Mamdani y Sugeno caen a ~50 rpm y el PI a ~45. Sugeno mueve más el voltaje con el ruido del encoder, igual que en la simulación: cerca de cero su superficie es más inclinada.
 
-**¿Por qué las ganancias en el firmware dependen de RPM_MAX?**
-Porque el motor real (con reductor) gira mucho más lento que el simulado. Al expresar Ke y Kde como fracción de la velocidad máxima, la misma sintonía se adapta a cualquier motor.
+**¿Qué es la "velocidad en palabras" de la interfaz?**
+Una variable lingüística más, con 5 etiquetas: Parado, Lento, Medio, Rápido y Muy rápido. Describe la velocidad igual que el controlador describe el error ("Va 60 % Rápido y 40 % Medio"). Es de presentación: el que decide el voltaje sigue siendo el FIS de e y de.
 
+**¿Por qué la S3 usa pines distintos y el canal A va en el GPIO7?**
+La ESP32-S3 no tiene los GPIO 25 a 33 (los usa la memoria flash). Además, el GPIO15 de nuestra placa se quedaba en bajo: con el comando `d` vimos que B cambiaba y A no, y movimos A al GPIO7.
 
 ## 7. Preguntas "trampa"
 
@@ -140,3 +154,6 @@ Porque el motor real (con reductor) gira mucho más lento que el simulado. Al ex
 - **¿Qué pasa si quitan el `clip` de u?** Windup: al bajar la referencia el motor tarda en responder, porque el acumulador quedó por encima de 12 V.
 - **¿Cuántas reglas se activan como máximo a la vez?** 4, porque son 2 conjuntos por entrada.
 - **¿Por qué `ePrev = ref` al reiniciar en el firmware?** Para que en el primer paso `de` no tenga un salto artificial.
+- **¿Qué pasa si conectan el VCC del encoder (azul) a 5 V?** Las señales A y B saldrían a 5 V y la S3 solo aguanta 3.3 V en sus pines. Por eso va a 3V3.
+- **¿Por qué el contador se quedaba en 0 aunque el motor giraba?** Solo cambiaba el canal B; sin A, la tabla de cuadratura suma +1 y −1 alternados y se cancela.
+- **¿El suavizado de la interfaz afecta al control?** No. Solo suaviza el dibujo (0.12 s); el ESP32 controla con los datos reales cada 10 ms.
