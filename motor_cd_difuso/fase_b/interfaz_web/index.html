@@ -122,6 +122,13 @@
       <button id="bConectar">Conectar ESP32</button>
       <div class="estado"><span id="punto" class="punto"></span><span id="txtEstado">Desconectado</span></div>
       <div class="lectura" id="lectura"></div>
+      <label class="campos" style="grid-template-columns: 1fr 120px; margin-top:4px">
+        <span>LED de la placa</span>
+        <select id="selLED" style="font:inherit; padding:5px 7px; border-radius:6px; border:1px solid var(--borde); background:var(--bg); color:var(--texto)">
+          <option value="1" selected>Velocidad</option>
+          <option value="0">Error</option>
+        </select>
+      </label>
     </section>
 
     <section class="card">
@@ -195,6 +202,9 @@
       <div class="cabecera">
         <h2>Velocidad en palabras</h2>
         <span class="estado" id="txtLibre">Elige una velocidad para mover el motor</span>
+      </div>
+      <div class="estado" id="notaLED" style="margin:-4px 0 10px">
+        El LED de la ESP32-S3 muestra esta etiqueta: Parado apagado · Lento cian · Medio verde · Rápido ámbar · Muy rápido rojo.
       </div>
       <div class="deslizadorVel">
         <input type="range" id="rVel" min="0" max="100" step="1" value="0" aria-label="Velocidad objetivo">
@@ -652,6 +662,7 @@ async function conectar() {
     await p.abrir();
     estado.puerto = p;
     await p.escribir("p");
+    await p.escribir("l" + $("selLED").value);  // modo del LED elegido en la página
   } catch (e) {
     if (e.name !== "NotFoundError") mostrarMensaje("No se pudo abrir el puerto: " + e.message + " ¿Está abierto el Monitor Serie de Arduino o la otra interfaz?");
   }
@@ -1066,7 +1077,8 @@ function dibujarInferencia() {
   if (inf) {
     const d = etiquetaDominante(inf.muE);
     $("led").style.background = css(COLOR_ETQ[d]);
-    $("txtDominante").textContent = `Etiqueta dominante del error: ${ETIQUETAS[d]} (color del LED)`;
+    $("txtDominante").textContent = `Etiqueta dominante del error: ${ETIQUETAS[d]}` +
+      ($("selLED").value === "0" ? " (color del LED)" : "");
   } else {
     $("led").style.background = css("--eje");
     $("txtDominante").textContent = "Etiqueta dominante del error: —";
@@ -1133,6 +1145,11 @@ $("bGuardar").onclick = guardar;
 $("voltaje").oninput = () => ($("txtVoltaje").textContent = (+$("voltaje").value).toFixed(1) + " V");
 $("bAplicar").onclick = () => estado.puerto.escribir("v" + (+$("voltaje").value).toFixed(2));
 $("bParar").onclick = () => { $("voltaje").value = 0; $("txtVoltaje").textContent = "0.0 V"; estado.puerto.escribir("p"); };
+$("selLED").onchange = () => {
+  $("notaLED").hidden = $("selLED").value !== "1";
+  estado.sucio = true;
+  if (estado.puerto) estado.puerto.escribir("l" + $("selLED").value);
+};
 $("bPlay").onclick = () => { alternarReproduccion(); actualizarBotones(); };
 $("rTiempo").oninput = () => { estado.repro.play = false; irA(parseFloat($("rTiempo").value)); actualizarBotones(); };
 $("selCorrida").onchange = () => { const c = estado.corridas[+$("selCorrida").value]; if (c) elegirCorrida(c, 0); actualizarBotones(); };

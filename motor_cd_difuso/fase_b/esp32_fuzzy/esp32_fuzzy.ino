@@ -9,8 +9,10 @@
  * Hardware: ESP32-S3-WROOM-1 (DevKitC-1) + puente H L298N + motor GA25-370
  * (12 V, 130 rpm) con encoder Hall. En Arduino IDE: placa "ESP32S3 Dev Module".
  *
- * LED RGB integrado: muestra la etiqueta difusa DOMINANTE del error e:
- *   NG rojo · NP amarillo · Z verde · PP cian · PG azul · apagado = motor parado.
+ * LED RGB integrado (comando l1 / l0):
+ *   l1 (por defecto) VELOCIDAD medida: Parado apagado · Lento cian · Medio verde
+ *                    · Rápido ámbar · Muy rápido rojo
+ *   l0               ERROR: NG rojo · NP amarillo · Z verde · PP cian · PG azul
  *   - Lazo cerrado REAL: el encoder mide la velocidad y el FIS la corrige.
  *   - HIL (comando 'h'): la PC simula el motor; el ESP32 solo calcula el control.
  *
@@ -26,6 +28,7 @@
  *   q      -> silencia / reactiva la salida CSV (para leer el Monitor Serie)
  *   d      -> diagnóstico del encoder: cambios y nivel de A y B en 0.5 s
  *   z4.5   -> cambia la zona muerta en vivo (para medirla; se pierde al reiniciar)
+ *   l1/l0  -> el LED muestra la velocidad (l1) o el error (l0)
  *
  * Salida en modo normal (CSV, cada TS):  t_ms,ref,rpm,u,metodo
  */
@@ -131,7 +134,10 @@ int etiquetaDominante(float x) {
   return mejor;
 }
 
-int etiquetaLED = -2;  // la que se está mostrando (-1 = apagado)
+// Qué muestra el LED: 'v' = etiqueta de la VELOCIDAD medida (por defecto),
+// 'e' = etiqueta del ERROR. Se cambia con los comandos l1 (velocidad) y l0 (error).
+char modoLED = 'v';
+int etiquetaLED = -2;  // lo que se está mostrando (-1 = apagado; 10..14 = velocidad)
 
 void escribirLED(uint8_t r, uint8_t g, uint8_t b) {
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
@@ -141,16 +147,20 @@ void escribirLED(uint8_t r, uint8_t g, uint8_t b) {
 #endif
 }
 
-// Cambia el color solo cuando cambia la etiqueta (j = -1 apaga el LED).
+// Escribe el color solo si cambió lo que se muestra (clave), para no saturar el LED.
+void ponerColorLED(int clave, const uint8_t rgb[3]) {
+  if (clave == etiquetaLED) return;
+  etiquetaLED = clave;
+  escribirLED(rgb[0] * BRILLO_LED / 255, rgb[1] * BRILLO_LED / 255, rgb[2] * BRILLO_LED / 255);
+}
+
+const uint8_t APAGADO[3] = {0, 0, 0};
+
+// Modo error: color de la etiqueta del error (j = -1 apaga el LED).
 void mostrarEtiqueta(int j) {
-  if (j == etiquetaLED) return;
-  etiquetaLED = j;
-  if (j < 0) {
-    escribirLED(0, 0, 0);
-    return;
-  }
-  escribirLED(COLORES[j][0] * BRILLO_LED / 255, COLORES[j][1] * BRILLO_LED / 255,
-              COLORES[j][2] * BRILLO_LED / 255);
+  if (modoLED != 'e') return;
+  if (j < 0) ponerColorLED(-1, APAGADO);
+  else ponerColorLED(j, COLORES[j]);
 }
 
 float evaluarFIS(float e, float de, bool mamdani) {
@@ -226,6 +236,36 @@ void IRAM_ATTR isrEncoder() {
 }
 
 float rpmMax() { return modoHIL ? RPM_MAX_HIL : RPM_MAX_REAL; }
+
+// Variable lingüística "velocidad" (igual que en la interfaz web):
+// Parado, Lento, Medio, Rápido, Muy rápido con centros en 0, 22, 44, 66 y 88 %
+// de las rpm máximas y triángulos de ancho 22 %.
+const float FRAC_VEL[5] = {0.0, 0.22, 0.44, 0.66, 0.88};
+const uint8_t COLORES_VEL[5][3] = {
+  {0, 0, 0},      // Parado: apagado
+  {0, 180, 255},  // Lento: cian
+  {0, 255, 0},    // Medio: verde
+  {255, 140, 0},  // Rápido: ámbar
+  {255, 0, 0},    // Muy rápido: rojo
+};
+
+float pertenenciaVel(float v, int j) {
+  float c = FRAC_VEL[j] * rpmMax();
+  if (j == 0 && v <= c) return 1.0;
+  if (j == 4 && v >= c) return 1.0;
+  float mu = 1.0 - fabsf(v - c) / (0.22 * rpmMax());
+  return mu > 0.0 ? mu : 0.0;
+}
+
+// Modo velocidad: color de la etiqueta con mayor pertenencia de la velocidad medida.
+void mostrarVelocidad(float v) {
+  if (modoLED != 'v') return;
+  v = fabsf(v);
+  int mejor = 0;
+  for (int j = 1; j < 5; j++)
+    if (pertenenciaVel(v, j) > pertenenciaVel(v, mejor)) mejor = j;
+  ponerColorLED(10 + mejor, COLORES_VEL[mejor]);
+}
 
 void escribirPWM(int duty) {
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
@@ -371,6 +411,12 @@ void procesarComando(String cmd) {
       Serial.print("# zona muerta = ");
       Serial.println(zonaMuerta, 2);
       break;
+    case 'l':  // l1 = LED muestra la velocidad, l0 = LED muestra el error
+      modoLED = (valor >= 0.5) ? 'v' : 'e';
+      etiquetaLED = -2;  // forzar que se repinte
+      ponerColorLED(-1, APAGADO);
+      Serial.println(modoLED == 'v' ? "# LED: velocidad" : "# LED: error");
+      break;
     case 'q':
       imprimirCSV = !imprimirCSV;
       Serial.println(imprimirCSV ? "# CSV ON" : "# CSV OFF");
@@ -385,6 +431,7 @@ void procesarComando(String cmd) {
     case 'y':  // HIL: la PC manda la velocidad simulada y espera u
       if (modoHIL) {
         pasoControl(valor);
+        mostrarVelocidad(valor);  // en HIL, la velocidad simulada
         if (MOTOR_SIGUE_HIL) aplicarVoltaje(u);
         tUltimoY = millis();
         Serial.print('u');
@@ -412,7 +459,7 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(PIN_ENC_B), isrEncoder, CHANGE);
   }
   aplicarVoltaje(0);
-  mostrarEtiqueta(-1);
+  ponerColorLED(-1, APAGADO);
   Serial.println("# t_ms,ref,rpm,u,metodo");
   tProximo = micros();
 }
@@ -440,6 +487,7 @@ void loop() {
   if ((long)(micros() - tProximo) >= 0) {
     tProximo += TS_US;
     rpm = HAY_SENSOR ? leerRPM() : 0.0;
+    mostrarVelocidad(rpm);
     if (!lazoAbierto && HAY_SENSOR) {
       if (ref == 0.0) {
         // Parado: motor libre. No se controla alrededor de 0 rpm, porque con la
